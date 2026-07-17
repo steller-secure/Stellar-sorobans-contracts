@@ -2,7 +2,7 @@
 
 ## Overview
 
-PropChain smart contracts provide a comprehensive API for real estate tokenization and management on the blockchain. This document outlines the complete contract interface, methods, and data structures for all core system components.
+PropChain smart contracts provide a comprehensive API for real estate tokenization and management across the Stellar (Soroban) and Polkadot (ink!) blockchains. This document outlines the complete contract interface, methods, and data structures for all core system components. See [contracts/README.md](../contracts/README.md) for the full framework breakdown.
 
 ## Core Contracts
 
