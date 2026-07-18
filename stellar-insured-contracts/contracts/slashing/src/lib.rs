@@ -123,6 +123,62 @@ impl SlashingContract {
         count += 1;
         env.storage().persistent().set(&DataKey::ViolationCount(target.clone(), role.clone()), &count);
 
+        let params = env.storage().persistent().get::<DataKey, PenaltyParams>(&DataKey::PenaltyParams(role.clone())).unwrap();
+
+        // Calculate progressive penalty percentage: percentage * multiplier^(count - 1)
+        let multiplier_factor = params.multiplier.checked_pow(count - 1).unwrap_or(u32::MAX);
+        let scaled_percentage = params.percentage.checked_mul(multiplier_factor).unwrap_or(u32::MAX);
+
+        // Derive final slashing amount from the base amount: amount * scaled_percentage / 100
+        let final_amount = amount.checked_mul(scaled_percentage as i128).unwrap_or(i128::MAX) / 100;
+
+        let record = SlashingRecord {
+            target: target.clone(),
+            role: role.clone(),
+            reason,
+            amount: final_amount,
+            timestamp: env.ledger().timestamp(),
+        };
+
+        // #380: cap history to MAX_HISTORY entries to prevent storage bloat
+        let mut history = get_history_inner(&env, &target, &role);
+        if history.len() >= MAX_HISTORY {
+            // Remove oldest entry (index 0)
+            let mut trimmed = Vec::new(&env);
+            for i in 1..history.len() {
+                trimmed.push_back(history.get(i).unwrap());
+            }
+            history = trimmed;
+        }
+        history.push_back(record);
+        set_history(&env, &target, &role, &history);
+
+        env.events().publish(
+            (symbol_short!("slash"), role),
+            final_amount,
+        );
+    }
+
+    /// Slashes a specific amount directly, overriding the configured PenaltyParams and cooldown checks.
+    /// Bypasses cooldown restrictions and penalty derivation math, but still increments the
+    /// violation count and adds a record to the history. Target role must still be in the slashable roles list.
+    pub fn slash_funds_override(env: Env, target: Address, role: Symbol, reason: String, amount: i128) {
+        let governance = get_governance(&env);
+        governance.require_auth();
+
+        if is_paused(&env) {
+            panic!("Contract paused");
+        }
+
+        let roles = get_slashable_roles(&env);
+        if !roles.contains(role.clone()) {
+            panic!("Target not eligible for slashing");
+        }
+
+        let mut count = get_violation_count_inner(&env, &target, &role);
+        count += 1;
+        env.storage().persistent().set(&DataKey::ViolationCount(target.clone(), role.clone()), &count);
+
         let record = SlashingRecord {
             target: target.clone(),
             role: role.clone(),
@@ -131,10 +187,8 @@ impl SlashingContract {
             timestamp: env.ledger().timestamp(),
         };
 
-        // #380: cap history to MAX_HISTORY entries to prevent storage bloat
         let mut history = get_history_inner(&env, &target, &role);
         if history.len() >= MAX_HISTORY {
-            // Remove oldest entry (index 0)
             let mut trimmed = Vec::new(&env);
             for i in 1..history.len() {
                 trimmed.push_back(history.get(i).unwrap());
@@ -255,8 +309,98 @@ impl SlashingContract {
                     return false;
                 }
             }
+            true
+        } else {
+            false
         }
+    }
+}
 
-        true
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{Env, Address, symbol_short, String};
+
+    #[test]
+    fn test_slashing_flow() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let governance = Address::generate(&env);
+        let risk_pool = Address::generate(&env);
+        let target = Address::generate(&env);
+        let role = symbol_short!("provider");
+
+        let contract_id = env.register_contract(None, SlashingContract);
+        let client = SlashingContractClient::new(&env, &contract_id);
+
+        client.initialize(&admin, &governance, &risk_pool);
+
+        // Initially not slashable because role is not in slashable list
+        assert!(!client.can_be_slashed(&target, &role));
+
+        // Add slashable role
+        client.add_slashable_role(&role);
+        
+        // Still not slashable because no PenaltyParams are configured yet
+        assert!(!client.can_be_slashed(&target, &role));
+
+        // Configure PenaltyParams: 10% percentage, 2x multiplier, 60s cooldown
+        let params = PenaltyParams {
+            percentage: 10,
+            multiplier: 2,
+            cooldown_seconds: 60,
+        };
+        client.configure_penalty_parameters(&role, &params);
+
+        // Now can be slashed
+        assert!(client.can_be_slashed(&target, &role));
+
+        // First offense: 10% of 1000 = 100
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        client.slash_funds(&target, &role, &String::from_str(&env, "first offense"), &1000);
+        assert_eq!(client.get_violation_count(&target, &role), 1);
+
+        let history = client.get_slashing_history(&target, &role);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.get(0).unwrap().amount, 100);
+
+        // Cooldown gating: cannot be slashed yet (timestamp 1000, cooldown 60)
+        env.ledger().with_mut(|l| l.timestamp = 1050);
+        assert!(!client.can_be_slashed(&target, &role));
+
+        // Advance past cooldown (1000 + 60 = 1060)
+        env.ledger().with_mut(|l| l.timestamp = 1061);
+        assert!(client.can_be_slashed(&target, &role));
+
+        // Second offense: 10% * 2^1 = 20% of 1000 = 200
+        client.slash_funds(&target, &role, &String::from_str(&env, "second offense"), &1000);
+        assert_eq!(client.get_violation_count(&target, &role), 2);
+        
+        let history = client.get_slashing_history(&target, &role);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.get(1).unwrap().amount, 200);
+
+        // Advance cooldown
+        env.ledger().with_mut(|l| l.timestamp = 1130);
+
+        // Third offense: 10% * 2^2 = 40% of 1000 = 400
+        client.slash_funds(&target, &role, &String::from_str(&env, "third offense"), &1000);
+        assert_eq!(client.get_violation_count(&target, &role), 3);
+        let history = client.get_slashing_history(&target, &role);
+        assert_eq!(history.get(2).unwrap().amount, 400);
+
+        // Test override path: slashes raw amount and bypasses cooldown
+        // Last slash was at 1130. We are at 1135 (cooldown has not elapsed)
+        env.ledger().with_mut(|l| l.timestamp = 1135);
+        assert!(!client.can_be_slashed(&target, &role));
+
+        client.slash_funds_override(&target, &role, &String::from_str(&env, "override slash"), &555);
+        // violation count is still incremented to 4
+        assert_eq!(client.get_violation_count(&target, &role), 4);
+        let history = client.get_slashing_history(&target, &role);
+        assert_eq!(history.len(), 4);
+        assert_eq!(history.get(3).unwrap().amount, 555); // raw amount used
     }
 }
