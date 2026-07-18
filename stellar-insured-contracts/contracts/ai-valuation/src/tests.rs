@@ -413,4 +413,102 @@ mod tests {
         // For now, just verify the model was registered
         assert!(engine.get_model("test_model".to_string()).is_some());
     }
+
+    // -----------------------------------------------------------------------
+    // Acceptance-criteria tests for issue #31
+    // -----------------------------------------------------------------------
+
+    /// Two different property IDs must produce different valuations.
+    ///
+    /// Before the fix, `generate_mock_features` used only `property_id % …`
+    /// terms, so properties with IDs that produced the same modular residue
+    /// would receive identical valuations.  The new implementation mixes the
+    /// block timestamp into a seed so that every distinct property_id produces
+    /// a distinct feature vector and therefore a distinct valuation.
+    #[ink::test]
+    fn test_different_inputs_yield_different_valuations() {
+        let mut engine = setup_ai_engine();
+
+        // Register an active model.
+        let model = create_sample_model();
+        assert!(engine.register_model(model).is_ok());
+
+        // Use two property IDs that are clearly different.
+        let prediction_a = engine
+            .predict_valuation(100, "test_model".to_string())
+            .expect("prediction for property 100 should succeed");
+
+        let prediction_b = engine
+            .predict_valuation(200, "test_model".to_string())
+            .expect("prediction for property 200 should succeed");
+
+        assert_ne!(
+            prediction_a.predicted_value,
+            prediction_b.predicted_value,
+            "different property IDs must produce different predicted values"
+        );
+        assert_ne!(
+            prediction_a.features_used,
+            prediction_b.features_used,
+            "different property IDs must produce different feature vectors"
+        );
+    }
+
+    /// Cached features must expire after `feature_cache_ttl` has elapsed.
+    ///
+    /// Before the fix, `extract_features` always returned the cached entry
+    /// without checking its age, so features were never refreshed.  After the
+    /// fix, when `block_timestamp - cached_at > feature_cache_ttl`, the cache
+    /// entry is discarded and features are re-generated.
+    ///
+    /// Strategy:
+    ///   1. Extract features at timestamp T=0 (default in unit-test env).
+    ///   2. Advance the mock clock past `feature_cache_ttl`.
+    ///   3. Extract features again — they must differ from the first extraction
+    ///      because the timestamp component of the seed has changed.
+    #[ink::test]
+    fn test_cached_features_expire_after_ttl() {
+        let mut engine = setup_ai_engine();
+
+        let property_id: u64 = 42;
+
+        // Snapshot 1: extract features at the default timestamp (0 ms in the
+        // ink unit-test environment).
+        let features_initial = engine
+            .extract_features(property_id)
+            .expect("initial feature extraction should succeed");
+
+        // Confirm the cache now holds the entry.
+        let cache_entry = engine
+            .get_property_features(property_id)
+            .expect("cache entry should exist after first extraction");
+        assert_eq!(cache_entry, features_initial);
+
+        // Advance the mock block clock to a time strictly past feature_cache_ttl
+        // (default 3600 ms) + 1 ms so the TTL condition fires.
+        let ttl = engine.feature_cache_ttl;
+        let advanced_time = ttl + 1;
+        ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(advanced_time);
+
+        // Snapshot 2: the cache is now stale — extract_features must re-generate.
+        let features_refreshed = engine
+            .extract_features(property_id)
+            .expect("feature extraction after TTL expiry should succeed");
+
+        // The refreshed features must differ from the initial ones because the
+        // block timestamp (part of the feature seed) has changed.
+        assert_ne!(
+            features_initial, features_refreshed,
+            "features should be re-generated after feature_cache_ttl has elapsed"
+        );
+
+        // The cache entry must now reflect the refreshed values.
+        let updated_cache = engine
+            .get_property_features(property_id)
+            .expect("updated cache entry should exist");
+        assert_eq!(
+            updated_cache, features_refreshed,
+            "cache must be updated with the freshly generated features"
+        );
+    }
 }
