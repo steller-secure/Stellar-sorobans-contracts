@@ -218,4 +218,14 @@ impl PolicyContract {
     pub fn update_cl(env: Env, policy_id: u64, amount: i128) {
         Self::update_claimed(env, policy_id, amount)
     }
+
+    // New placeholder for Governance PolicyChange action
+    pub fn policy_update(env: Env, policy_id: u64) {
+        // Placeholder: could implement policy parameter changes.
+        // Emit an event for visibility.
+        env.events().publish(
+            (symbol_short!("policy"), symbol_short!("updated")),
+            policy_id,
+        );
+    }
 }
