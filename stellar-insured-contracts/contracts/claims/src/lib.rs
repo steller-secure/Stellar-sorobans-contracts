@@ -188,7 +188,7 @@ impl ClaimsContract {
         // Get pool stats to verify available capital
         let pool_stats: PoolStats = env.invoke_contract(
             &risk_pool,
-            &symbol_short!("get_stats"),
+            &symbol_short!("get_pool_stats"),
             ().into(),
         );
         
@@ -200,14 +200,21 @@ impl ClaimsContract {
         // payout_claim(recipient, amount)
         let risk_pool: Address = env.storage().instance().get(&DataKey::RiskPool).unwrap();
 
-        env.invoke_contract::<()>(
+        // Provide admin auth for RiskPool payout
+        let admin = get_admin(&env);
+        env.auths(&[admin]);
+        env.invoke_contract::<> (
             &risk_pool,
             &symbol_short!("payout"),
             (claim.claimant.clone(), claim.amount).into(),
         );
 
         // Update total claimed in policy contract
-        env.invoke_contract::<()>(
+        // Provide contract auth for Policy update
+        let policy_contract: Address = env.storage().instance().get(&DataKey::PolicyContract).unwrap();
+        let claims_addr = env.current_contract_address();
+        env.auths(&[claims_addr]);
+        env.invoke_contract::<> (
             &policy_contract,
             &symbol_short!("update_cl"),
             (claim.policy_id, claim.amount).into(),
