@@ -1,6 +1,6 @@
 # Stellar Insured Contracts Workspace
 
-This workspace contains the Rust and ink! smart contracts, shared utilities, integration tests, security tooling, SDK adapters, and deployment scripts that support the property tokenization and insurance system.
+This workspace contains the Rust smart contracts for **both ink! (Polkadot/Substrate) and Soroban (Stellar)**, shared utilities, integration tests, security tooling, SDK adapters, and deployment scripts that support the property tokenization and insurance system.
 
 ## Architecture
 

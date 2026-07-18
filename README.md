@@ -1,7 +1,7 @@
 🧠 Stellar Insured
-Decentralized Insurance Infrastructure on Stellar Soroban
+Decentralized Insurance Infrastructure on Stellar Soroban & Polkadot ink!
 
-Stellar Insured is a suite of Soroban smart contracts that powers decentralized insurance products on the Stellar network.
+Stellar Insured is a suite of smart contracts that powers decentralized insurance products across the Stellar (Soroban) and Polkadot (ink!) ecosystems.
 
 The protocol enables transparent policy issuance, deterministic claims processing, decentralized risk pools, DAO governance, and on-chain slashing mechanisms. All critical insurance logic is executed on-chain, ensuring security, transparency, and auditability.
 
@@ -23,18 +23,25 @@ On-chain slashing mechanism
 Configurable voting thresholds and quorum requirements
 Progressive penalties for malicious actors
 Fully auditable smart contract execution
-Soroban-native architecture
+Dual-framework architecture (ink! + Soroban)
 🏗 Architecture
 
-The protocol consists of five core contracts:
+The protocol spans **20 contract crates** across two frameworks. The Stellar Insured line (Soroban) handles policy lifecycle, claims, risk pools, governance, and slashing. The PropChain line (ink!) covers property tokenization, fractional ownership, compliance, AI valuation, oracles, and more.
 
-contracts/
-├── policy/
-├── claims/
-├── risk_pool/
-├── governance/
-├── slashing/
-└── lib.rs
+**Soroban contracts** (stellar-insured):
+- `policy` — Insurance policy management
+- `claims` — Multi-stage claims processing
+- `risk_pool` — Liquidity risk pool
+- `governance` — DAO governance
+- `slashing` — On-chain slashing and penalties
+- `bridge` — Cross-chain property-token bridge
+- `escrow` — Property transaction escrow
+- `lib` — Shared Soroban library
+
+**ink! contracts** (propchain):
+- `ai-valuation`, `analytics`, `compliance_registry`, `fees`, `fractional`, `insurance`, `ipfs-metadata`, `oracle`, `property-token`, `proxy`, `traits`, `zk-compliance`
+
+See [stellar-insured-contracts/contracts/README.md](stellar-insured-contracts/contracts/README.md) for the full breakdown.
 📜 Contract Overview
 1. Policy Contract
 
@@ -248,79 +255,77 @@ pause()
 unpause()
 🧑‍💻 Technology Stack
 Layer	Technology
-Blockchain	Stellar
-Smart Contracts	Soroban
+Blockchain	Stellar (Soroban) & Polkadot (ink!)
+Smart Contracts	Soroban SDK + ink!
 Language	Rust
-Testing	Soroban Test Framework
-Runtime	Soroban VM
+Testing	Soroban Test Framework / cargo-contract
+Runtime	Soroban VM / Substrate (Polkadot)
 📦 Getting Started
 Prerequisites
-Rust (latest stable)
-Stellar CLI
-Soroban SDK
+- Rust (latest stable)
+- Stellar CLI + cargo-contract (for ink!)
 Install Dependencies
 rustup update
 cargo install stellar-cli
+cargo install cargo-contract --locked
 🔨 Build Contracts
 
-Build all contracts:
+Contracts are organized in a Cargo workspace under `stellar-insured-contracts/`:
 
-cd contracts/policy
+cd stellar-insured-contracts
 cargo build --release
 
-cd ../claims
-cargo build --release
+Or build individual contracts:
 
-cd ../risk_pool
-cargo build --release
-
-cd ../governance
-cargo build --release
-
-cd ../slashing
-cargo build --release
-
-Or build from the workspace root:
-
-cargo build --release
+cd stellar-insured-contracts/contracts/policy && cargo build --release
+cd stellar-insured-contracts/contracts/claims && cargo build --release
+cd stellar-insured-contracts/contracts/risk_pool && cargo build --release
+cd stellar-insured-contracts/contracts/governance && cargo build --release
+cd stellar-insured-contracts/contracts/slashing && cargo build --release
 🧪 Run Tests
-cargo test
+# Soroban contracts
+cd stellar-insured-contracts && cargo test
+
+# ink! contracts
+cd stellar-insured-contracts && cargo test --package propchain-insurance
 🌐 Network Configuration
 Component	Value
 Network	Stellar Testnet
 Execution	Soroban VM
 Wallets	Non-Custodial Stellar Wallets
 🚀 Deployment
-Deploy Contracts
+
+### Soroban Contracts (Stellar Insured)
 
 Deploy each compiled WASM contract using Stellar CLI:
 
-stellar contract deploy ...
-Initialize Contracts
+```bash
+stellar contract deploy --wasm stellar-insured-contracts/target/wasm32-unknown-unknown/release/stellar_insured_policy.wasm
+```
 
 Initialize contracts in dependency order:
 
-Risk Pool
-Policy
-Claims
-Slashing
-Governance
-Local Sandbox Orchestration
+1. Risk Pool
+2. Policy
+3. Claims
+4. Slashing
+5. Governance
 
-The repository includes a local deployment orchestrator:
+### ink! Contracts (PropChain)
 
-stellar-insured-contracts/scripts/orchestrate-soroban.sh
+Use the provided deployment script:
 
-This script:
+```bash
+stellar-insured-contracts/scripts/deploy.sh --network local
+```
 
-Deploys contracts in dependency order
-Configures governance defaults
-Initializes the risk pool
-Prepares the local development environment
+### Local Node
 
-Additional configuration examples are available in:
+Start a local development node:
 
-docs/soroban-orchestrator.md
+```bash
+stellar-insured-contracts/scripts/local-node.sh start
+```
 🔐 Security
 
 Security is a first-class concern throughout the protocol.
@@ -345,14 +350,16 @@ Soroban Documentation
 Rust Documentation
 🤝 Contributing
 
-We welcome contributions from the Stellar ecosystem.
+We welcome contributions from both the Stellar and Polkadot ecosystems.
 
 Contribution Process
-Fork the repository
-Create a feature branch
-Add tests for all changes
-Follow Rust and Soroban best practices
-Submit a Pull Request
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for all changes
+4. Follow Rust, Soroban, and ink! best practices
+5. Submit a Pull Request
+
+See [structure.md](structure.md) to navigate the codebase and [stellar-insured-contracts/Cargo.toml](stellar-insured-contracts/Cargo.toml) for the workspace layout.
 📄 License
 
 MIT License
