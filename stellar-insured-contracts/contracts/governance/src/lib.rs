@@ -17,6 +17,7 @@ pub enum DataKey {
     VoterRecord(u64, Address),
     VotingPeriod,
     GovernanceActionPending(u64),  // proposal_id -> GovernanceAction
+    MinQuorumPercentage,
 }
 
 #[contracttype]
@@ -278,6 +279,19 @@ impl GovernanceContract {
     pub fn vote(env: Env, voter: Address, proposal_id: u64, weight: i128, is_yes: bool) {
         voter.require_auth();
 
+        if weight <= 0 {
+            panic!("Weight must be positive");
+        }
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token)
+            .unwrap_or_else(|| panic!("Token contract address not set"));
+        let token_client = soroban_sdk::token::Client::new(&env, &token_addr);
+        let actual_balance = token_client.balance(&voter);
+
+        if weight > actual_balance {
+            panic!("Voting weight exceeds token balance");
+        }
+
         let mut proposal = get_proposal_inner(&env, proposal_id);
 
         if env.ledger().timestamp() > proposal.expires_at {
@@ -339,6 +353,19 @@ impl GovernanceContract {
         }
 
         let total_votes = proposal.yes_votes + proposal.no_votes;
+        
+        // Quorum Check
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token)
+            .unwrap_or_else(|| panic!("Token contract address not set"));
+        let token_client = soroban_sdk::token::Client::new(&env, &token_addr);
+        let total_supply = token_client.total_supply();
+        
+        let quorum_percentage: u32 = env.storage().instance().get(&DataKey::MinQuorumPercentage).unwrap_or(10); // default 10%
+        let required_quorum = total_supply * (quorum_percentage as i128) / 100;
+        if total_votes < required_quorum {
+            panic!("Quorum not met");
+        }
+
         if total_votes == 0 || (proposal.yes_votes * 100 / total_votes) < proposal.threshold_percentage as i128 {
             panic!("Threshold not met");
         }
@@ -399,6 +426,15 @@ impl GovernanceContract {
     pub fn execute_slashing_proposal(env: Env, proposal_id: u64) {
         Self::execute_proposal(env, proposal_id);
     }
+
+    pub fn set_min_quorum_percentage(env: Env, value: u32) {
+        let admin = get_admin(&env);
+        admin.require_auth();
+        if value > 100 {
+            panic!("Quorum percentage cannot exceed 100");
+        }
+        env.storage().instance().set(&DataKey::MinQuorumPercentage, &value);
+    }
 }
 
 #[contractimpl]
@@ -455,3 +491,180 @@ impl GovernanceContract {
         env.storage().persistent().get(&DataKey::VoterRecord(proposal_id, voter))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{Env, Address, String, symbol_short};
+    use soroban_sdk::token::Client as TokenClient;
+    use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
+
+    fn setup_test_token(env: &Env) -> (Address, TokenAdminClient, TokenClient) {
+        let token_addr = env.register_stellar_asset_contract(Address::generate(env));
+        let admin_client = TokenAdminClient::new(env, &token_addr);
+        let client = TokenClient::new(env, &token_addr);
+        (token_addr, admin_client, client)
+    }
+
+    fn setup_governance(env: &Env, token_addr: &Address) -> GovernanceContractClient {
+        let gov_addr = env.register_contract(None, GovernanceContract);
+        let client = GovernanceContractClient::new(env, &gov_addr);
+        let admin = Address::generate(env);
+        let slashing = Address::generate(env);
+        let claims = Address::generate(env);
+        let risk_pool = Address::generate(env);
+        let policy = Address::generate(env);
+        client.initialize(&admin, token_addr, &slashing, &3600, &claims, &risk_pool, &policy);
+        client
+    }
+
+    #[test]
+    #[should_panic(expected = "Voting weight exceeds token balance")]
+    fn test_attacker_with_zero_tokens_cannot_vote() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (token_addr, _, _) = setup_test_token(&env);
+        let gov_client = setup_governance(&env, &token_addr);
+
+        let creator = Address::generate(&env);
+        let proposal_id = gov_client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Prop"),
+            &String::from_str(&env, "Desc"),
+            &String::from_str(&env, "Data"),
+            &50,
+        );
+
+        let attacker = Address::generate(&env);
+        // Attacker has 0 tokens, trying to vote with weight 1 should fail.
+        gov_client.vote(&attacker, &proposal_id, &1, &true);
+    }
+
+    #[test]
+    #[should_panic(expected = "Voting weight exceeds token balance")]
+    fn test_cannot_vote_exceeding_token_balance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (token_addr, token_admin, _) = setup_test_token(&env);
+        let gov_client = setup_governance(&env, &token_addr);
+
+        let voter = Address::generate(&env);
+        token_admin.mint(&voter, &100);
+
+        let creator = Address::generate(&env);
+        let proposal_id = gov_client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Prop"),
+            &String::from_str(&env, "Desc"),
+            &String::from_str(&env, "Data"),
+            &50,
+        );
+
+        // Voter has 100 tokens, trying to vote with 101 weight should fail.
+        gov_client.vote(&voter, &proposal_id, &101, &true);
+    }
+
+    #[test]
+    fn test_successful_voting_up_to_balance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (token_addr, token_admin, _) = setup_test_token(&env);
+        let gov_client = setup_governance(&env, &token_addr);
+
+        let voter = Address::generate(&env);
+        token_admin.mint(&voter, &100);
+
+        let creator = Address::generate(&env);
+        let proposal_id = gov_client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Prop"),
+            &String::from_str(&env, "Desc"),
+            &String::from_str(&env, "Data"),
+            &50,
+        );
+
+        // Vote exactly 100 weight (voter's balance).
+        gov_client.vote(&voter, &proposal_id, &100, &true);
+
+        let stats = gov_client.get_proposal_stats(&proposal_id);
+        assert_eq!(stats.yes_votes, 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "Quorum not met")]
+    fn test_quorum_enforcement_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (token_addr, token_admin, _) = setup_test_token(&env);
+        let gov_client = setup_governance(&env, &token_addr);
+
+        // Total supply = 1000 tokens
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        token_admin.mint(&voter1, &90); // 9% of total supply
+        token_admin.mint(&voter2, &910); // remaining 91%
+
+        let creator = Address::generate(&env);
+        let proposal_id = gov_client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Prop"),
+            &String::from_str(&env, "Desc"),
+            &String::from_str(&env, "Data"),
+            &50,
+        );
+
+        // Vote with voter1 (9% of supply).
+        gov_client.vote(&voter1, &proposal_id, &90, &true);
+
+        // Fast forward past voting period (3600 seconds).
+        env.ledger().with_mut(|l| l.timestamp = 3601);
+
+        gov_client.finalize_proposal(&proposal_id);
+
+        // Execution should fail because 9% quorum is below default 10% quorum requirement.
+        gov_client.execute_proposal(&proposal_id);
+    }
+
+    #[test]
+    fn test_quorum_and_threshold_met_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (token_addr, token_admin, _) = setup_test_token(&env);
+        let gov_client = setup_governance(&env, &token_addr);
+
+        // Total supply = 1000 tokens
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        token_admin.mint(&voter1, &150); // 15% of total supply
+        token_admin.mint(&voter2, &850);
+
+        let creator = Address::generate(&env);
+        let proposal_id = gov_client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Prop"),
+            &String::from_str(&env, "Desc"),
+            &String::from_str(&env, "Data"),
+            &50,
+        );
+
+        // Vote with voter1 (15% of supply).
+        gov_client.vote(&voter1, &proposal_id, &150, &true);
+
+        // Fast forward past voting period (3600 seconds).
+        env.ledger().with_mut(|l| l.timestamp = 3601);
+
+        gov_client.finalize_proposal(&proposal_id);
+
+        // Quorum is met (15% >= 10%) and threshold is met (100% yes votes >= 50%).
+        gov_client.execute_proposal(&proposal_id);
+
+        let stats = gov_client.get_proposal_stats(&proposal_id);
+        assert_eq!(stats.status, symbol_short!("executed"));
+    }
+}
+
