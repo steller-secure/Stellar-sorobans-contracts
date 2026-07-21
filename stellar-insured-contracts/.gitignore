@@ -1,7 +1,6 @@
 # Rust
 /target/
-# Cargo.lock - commented out to allow CI to use it
-# Cargo.lock
+stellar-insured-contracts/target/
 **/*.rs.bk
 *.pdb
 
@@ -54,17 +53,16 @@ coverage/
 *.sqlite
 *.sqlite3
 
-# Temporary files
+# Temporary & WIP Files
 tmp/
 temp/
 *.tmp
+*.new
+*.bak
+*.backup
 
 # Docker
 .dockerignore
-
-# Backup files
-*.bak
-*.backup
 
 # Local development
 .local/
@@ -90,7 +88,7 @@ site/
 # Rust analyzer
 .rust-analyzer/
 
-# Ink! specific
+# Ink! / Soroban specific
 .contract/
 artifacts/
 metadata.json
@@ -125,10 +123,8 @@ benchmark-results.json
 perf.data*
 flamegraph.svg
 
-# Linting
+# Linting & Formatting backups
 .clippy.toml.backup
-
-# Formatting
 rustfmt.toml.backup
 
 # Local configuration

@@ -1,6 +1,10 @@
 name: CI
 
 on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
 env:
@@ -13,38 +17,51 @@ jobs:
     defaults:
       run:
         working-directory: stellar-insured-contracts
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
-    
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          stellar-insured-contracts/target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('stellar-insured-contracts/**/Cargo.lock') }}
-    
-    - name: Add WASM target
-      run: rustup target add wasm32-unknown-unknown
-    
-    - name: Check formatting
-      run: cargo fmt --all -- --check
-    
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
-    
-    - name: Run workspace tests
-      run: cargo test --workspace
-    
-    - name: Run PropertyToken unit tests
-      working-directory: stellar-insured-contracts/contracts/property-token
-      run: cargo test --lib
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            stellar-insured-contracts/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('stellar-insured-contracts/**/Cargo.lock') }}
+
+      - name: Add WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      # Reject stray *.new, editor temp, or leftover WIP files
+      - name: Check for stray temp/WIP files
+        working-directory: .
+        run: |
+          STRAY_FILES=$(find . -type f \( -name "*.new" -o -name "*.bak" -o -name "*.tmp" -o -name "*~" -o -name "*.swp" \) -not -path "*/target/*" -not -path "*/.git/*")
+          if [ -n "$STRAY_FILES" ]; then
+            echo "Error: The following stray temp/WIP files were found in the repository:"
+            echo "$STRAY_FILES"
+            echo "Please remove these files before committing."
+            exit 1
+          fi
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: Run PropertyToken unit tests
+        run: cargo test --package property-token --lib
 
   security:
     name: Security Audit
@@ -53,8 +70,10 @@ jobs:
     defaults:
       run:
         working-directory: stellar-insured-contracts
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,8 +97,10 @@ jobs:
     defaults:
       run:
         working-directory: stellar-insured-contracts
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -93,10 +114,12 @@ jobs:
       - name: Build workspace contracts
         run: |
           for pkg in contracts/traits contracts/proxy contracts/insurance contracts/property-token contracts/analytics contracts/fees contracts/compliance_registry contracts/fractional; do
-            echo "Building $pkg..."
-            cd "$pkg"
-            cargo contract build --release || true
-            cd ../..
+            if [ -d "$pkg" ]; then
+              echo "Building $pkg..."
+              cd "$pkg"
+              cargo contract build --release || true
+              cd ../..
+            fi
           done
 
       - name: Upload build artifacts
@@ -113,8 +136,10 @@ jobs:
     defaults:
       run:
         working-directory: stellar-insured-contracts
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
