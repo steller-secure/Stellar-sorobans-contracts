@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +39,9 @@ pub enum ClaimStatus {
     Approved,
     Rejected,
     Settled,
+    Withdrawn,
+    Disputed,
+    Expired,
 }
 
 #[contracttype]
@@ -50,6 +53,18 @@ pub struct InsuranceClaim {
     pub amount: i128,
     pub status: ClaimStatus,
     pub submitted_at: u64,
+    /// Timestamp when the claim moved to UnderReview
+    pub reviewed_at: Option<u64>,
+    /// Timestamp when the claim was approved
+    pub approved_at: Option<u64>,
+    /// Timestamp when the claim was settled (payout completed)
+    pub settled_at: Option<u64>,
+    /// Free-text reason / description for the claim
+    pub description: String,
+    /// Deadline by which the claim must be settled; expired claims become ClaimStatus::Expired
+    pub deadline: Option<u64>,
+    /// If disputed, the dispute reason from the claimant
+    pub dispute_reason: Option<String>,
 }
 
 #[contracttype]
@@ -81,7 +96,28 @@ pub struct Proposal {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GovernanceAction {
-    ClaimApproval(u64),  // claim_id
-    FundAllocation(Address, i128),  // recipient, amount
-    PolicyChange(u64),  // policy_id
+    ClaimApproval(u64),            // claim_id
+    FundAllocation(Address, i128), // recipient, amount
+    PolicyChange(u64),             // policy_id
+}
+
+/// Typed errors for the Claims contract — enables callers to match
+/// on specific failure reasons rather than parsing panic messages.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ClaimError {
+    AlreadyInitialized = 1,
+    InvalidAddress = 2,
+    PolicyNotActive = 3,
+    ClaimAmountInvalid = 4,
+    PolicyHasActiveClaim = 5,
+    ClaimNotFound = 6,
+    InvalidStatusTransition = 7,
+    InsufficientPoolFunds = 8,
+    ClaimNotWithdrawable = 9,
+    ClaimNotDisputable = 10,
+    OnlyClaimantCanDispute = 11,
+    ClaimExpired = 12,
+    Unauthorized = 13,
 }
