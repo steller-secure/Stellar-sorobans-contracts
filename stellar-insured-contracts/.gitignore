@@ -1,8 +1,9 @@
 # Rust
 /target/
-stellar-insured-contracts/target/
+**/target/
 **/*.rs.bk
 *.pdb
+Cargo.lock
 
 # IDE
 .vscode/
