@@ -5,6 +5,29 @@ All notable changes to the Stellar Insured Soroban Contracts project will be doc
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Standardized error handling across the contract suite (#50):
+  - `policy`, `risk_pool`, `governance`, `slashing`, `bridge`, and `escrow`
+    (Soroban) now define typed `#[contracterror]` enums (`PolicyError`,
+    `RiskPoolError`, `GovernanceError`, `SlashingError`, `BridgeError`,
+    `EscrowError`) and return `Result<T, Error>` from every entry point,
+    matching the `claims` contract's existing pattern and the ink! insurance
+    contract's `InsuranceError` model. Human-readable `panic!("...")` strings
+    are no longer stored in the WASM binary or encoded in revert data.
+  - `OwnershipTransfer.sol`, `InitializationGuard.sol`, `InputValidation.sol`,
+    and `FallbackHandler.sol` now revert with the centralized `Errors`
+    library from `ContractErrors.sol` instead of inline `require(..., "...")`
+    strings; two missing error variants (`ZeroValueTransfer`,
+    `TransferFailed`) were added to the library for `FallbackHandler`.
+  - Fixed `libs.sol`'s `GovernanceManager`, which referenced nonexistent
+    `./errors/ContractErrors.sol` and `./storage/StorageDefinitions.sol`
+    imports and did not compile; it now imports the real `ContractErrors.sol`.
+  - Converged `src/lib.rs`'s duplicate `GovernanceManager` (a raw
+    `require()` string) onto the same `Errors` library pattern as `libs.sol`.
+
 ## [1.0.0] - 2026-04-24
 
 ### Added

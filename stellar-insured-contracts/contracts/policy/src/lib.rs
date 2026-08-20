@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env};
 use stellar_insured_lib::{InsurancePolicy, PolicyStatus, PolicyType};
 
 #[contracttype]
@@ -13,18 +13,44 @@ pub enum DataKey {
     PolicyCounter,
 }
 
+/// Typed errors for the Policy contract — enables callers to match on
+/// specific failure reasons rather than parsing panic messages, and avoids
+/// paying to encode/store human-readable strings in the WASM binary and
+/// revert data (#50).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PolicyError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    PolicyNotFound = 3,
+    InvalidDuration = 4,
+    InvalidCoverageAmount = 5,
+    InvalidPremiumAmount = 6,
+    PolicyNotActive = 7,
+    PolicyExpired = 8,
+    ClaimsContractNotSet = 9,
+    ClaimExceedsCoverage = 10,
+}
+
 // --- Storage helpers (#378: data access abstraction) ---
 
-fn get_admin(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Admin).unwrap()
+fn get_admin(env: &Env) -> Result<Address, PolicyError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(PolicyError::NotInitialized)
 }
 
 fn get_policy_counter(env: &Env) -> u64 {
     env.storage().instance().get(&DataKey::PolicyCounter).unwrap_or(0)
 }
 
-fn get_policy_inner(env: &Env, policy_id: u64) -> InsurancePolicy {
-    env.storage().persistent().get(&DataKey::Policy(policy_id)).expect("Policy not found")
+fn get_policy_inner(env: &Env, policy_id: u64) -> Result<InsurancePolicy, PolicyError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Policy(policy_id))
+        .ok_or(PolicyError::PolicyNotFound)
 }
 
 fn set_policy(env: &Env, policy_id: u64, policy: &InsurancePolicy) {
@@ -38,13 +64,14 @@ pub struct PolicyContract;
 
 #[contractimpl]
 impl PolicyContract {
-    pub fn initialize(env: Env, admin: Address, risk_pool: Address) {
+    pub fn initialize(env: Env, admin: Address, risk_pool: Address) -> Result<(), PolicyError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            return Err(PolicyError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::RiskPool, &risk_pool);
         env.storage().instance().set(&DataKey::PolicyCounter, &0u64);
+        Ok(())
     }
 
     pub fn issue_policy(
@@ -54,23 +81,26 @@ impl PolicyContract {
         premium_amount: i128,
         duration_days: u32,
         policy_type: PolicyType,
-    ) -> u64 {
+    ) -> Result<u64, PolicyError> {
         // The admin was previously read twice here: once directly from storage
         // and again through `get_admin`, with the first binding immediately
         // shadowed and discarded. `get_admin` performs the same read and
-        // carries the same not-initialised panic.
-        let admin = get_admin(&env);
+        // carries the same not-initialised error.
+        let admin = get_admin(&env)?;
         admin.require_auth();
 
         // #52: reject parameters that would produce an incoherent policy.
-        validate_policy_params(coverage_amount, premium_amount, duration_days);
+        validate_policy_params(coverage_amount, premium_amount, duration_days)?;
 
         let mut counter = get_policy_counter(&env);
         counter += 1;
         env.storage().instance().set(&DataKey::PolicyCounter, &counter);
 
-        let risk_pool: Address = env.storage().instance().get(&DataKey::RiskPool)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        let risk_pool: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::RiskPool)
+            .ok_or(PolicyError::NotInitialized)?;
 
         let policy = InsurancePolicy {
             policy_id: counter,
@@ -93,42 +123,42 @@ impl PolicyContract {
             (counter, holder, coverage_amount, premium_amount, duration_days),
         );
 
-        counter
+        Ok(counter)
     }
 
-    pub fn get_policy(env: Env, policy_id: u64) -> InsurancePolicy {
+    pub fn get_policy(env: Env, policy_id: u64) -> Result<InsurancePolicy, PolicyError> {
         get_policy_inner(&env, policy_id)
     }
 
     // Alias used by claims contract cross-contract call
-    pub fn get_pol(env: Env, policy_id: u64) -> InsurancePolicy {
+    pub fn get_pol(env: Env, policy_id: u64) -> Result<InsurancePolicy, PolicyError> {
         get_policy_inner(&env, policy_id)
     }
 
-    pub fn is_active(env: Env, policy_id: u64) -> bool {
-        let policy = get_policy_inner(&env, policy_id);
+    pub fn is_active(env: Env, policy_id: u64) -> Result<bool, PolicyError> {
+        let policy = get_policy_inner(&env, policy_id)?;
         if policy.status != PolicyStatus::Active && policy.status != PolicyStatus::Renewed {
-            return false;
+            return Ok(false);
         }
 
         let now = env.ledger().timestamp();
         let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
-        now <= expiry
+        Ok(now <= expiry)
     }
 
-    pub fn renew_policy(env: Env, policy_id: u64, duration_days: u32) {
-        let mut policy = get_policy_inner(&env, policy_id);
+    pub fn renew_policy(env: Env, policy_id: u64, duration_days: u32) -> Result<(), PolicyError> {
+        let mut policy = get_policy_inner(&env, policy_id)?;
         policy.holder.require_auth();
 
         if policy.status != PolicyStatus::Active && policy.status != PolicyStatus::Renewed {
-            panic!("Policy not active");
+            return Err(PolicyError::PolicyNotActive);
         }
 
         // #407: Ensure policy hasn't expired before renewal
         let now = env.ledger().timestamp();
         let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
         if now > expiry {
-            panic!("Policy has expired and cannot be renewed");
+            return Err(PolicyError::PolicyExpired);
         }
 
         policy.duration_days += duration_days;
@@ -141,17 +171,19 @@ impl PolicyContract {
             (symbol_short!("policy"), symbol_short!("renewed")),
             (policy_id, policy.holder, duration_days),
         );
+
+        Ok(())
     }
 
-    pub fn cancel_policy(env: Env, policy_id: u64) {
-        let mut policy = get_policy_inner(&env, policy_id);
+    pub fn cancel_policy(env: Env, policy_id: u64) -> Result<(), PolicyError> {
+        let mut policy = get_policy_inner(&env, policy_id)?;
         policy.holder.require_auth();
 
         // #407: Ensure policy hasn't expired before cancellation
         let now = env.ledger().timestamp();
         let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
         if now > expiry {
-            panic!("Policy has already expired");
+            return Err(PolicyError::PolicyExpired);
         }
 
         policy.status = PolicyStatus::Cancelled;
@@ -162,36 +194,43 @@ impl PolicyContract {
             (symbol_short!("policy"), symbol_short!("cancelled")),
             (policy_id, policy.holder, policy.coverage_amount),
         );
+
+        Ok(())
     }
 
-    pub fn set_claims_contract(env: Env, claims_contract: Address) {
-        get_admin(&env).require_auth();
+    pub fn set_claims_contract(env: Env, claims_contract: Address) -> Result<(), PolicyError> {
+        get_admin(&env)?.require_auth();
         env.storage().instance().set(&DataKey::ClaimsContract, &claims_contract);
+        Ok(())
     }
 
-    pub fn update_claimed(env: Env, policy_id: u64, amount: i128) {
-        let claims_contract: Address = env.storage().instance().get(&DataKey::ClaimsContract)
-            .expect("Claims contract not set");
+    pub fn update_claimed(env: Env, policy_id: u64, amount: i128) -> Result<(), PolicyError> {
+        let claims_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ClaimsContract)
+            .ok_or(PolicyError::ClaimsContractNotSet)?;
         claims_contract.require_auth();
 
-        let mut policy = get_policy_inner(&env, policy_id);
+        let mut policy = get_policy_inner(&env, policy_id)?;
         policy.total_claimed += amount;
 
         if policy.total_claimed > policy.coverage_amount {
-            panic!("Total claimed exceeds coverage amount");
+            return Err(PolicyError::ClaimExceedsCoverage);
         }
 
         set_policy(&env, policy_id, &policy);
+        Ok(())
     }
 
-    pub fn expire_policy(env: Env, policy_id: u64) {
-        let mut policy = get_policy_inner(&env, policy_id);
+    pub fn expire_policy(env: Env, policy_id: u64) -> Result<(), PolicyError> {
+        let mut policy = get_policy_inner(&env, policy_id)?;
 
         let now = env.ledger().timestamp();
         let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
 
         if now < expiry {
-            panic!("Policy not yet expired");
+            return Err(PolicyError::PolicyNotActive);
         }
 
         policy.status = PolicyStatus::Expired;
@@ -202,6 +241,8 @@ impl PolicyContract {
             (symbol_short!("policy"), symbol_short!("expired")),
             (policy_id, policy.holder),
         );
+
+        Ok(())
     }
 }
 
@@ -215,7 +256,7 @@ impl PolicyContract {
         get_policy_counter(&env)
     }
 
-    pub fn update_cl(env: Env, policy_id: u64, amount: i128) {
+    pub fn update_cl(env: Env, policy_id: u64, amount: i128) -> Result<(), PolicyError> {
         Self::update_claimed(env, policy_id, amount)
     }
 
@@ -249,21 +290,26 @@ impl PolicyContract {
 ///   takes a premium for nothing.
 /// * `premium_amount < 0` corrupts pool accounting, since the premium is added
 ///   to pool capital.
-pub fn validate_policy_params(coverage_amount: i128, premium_amount: i128, duration_days: u32) {
+pub fn validate_policy_params(
+    coverage_amount: i128,
+    premium_amount: i128,
+    duration_days: u32,
+) -> Result<(), PolicyError> {
     if duration_days == 0 {
-        panic!("Duration must be greater than zero");
+        return Err(PolicyError::InvalidDuration);
     }
     if coverage_amount <= 0 {
-        panic!("Coverage amount must be positive");
+        return Err(PolicyError::InvalidCoverageAmount);
     }
     if premium_amount < 0 {
-        panic!("Premium amount cannot be negative");
+        return Err(PolicyError::InvalidPremiumAmount);
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod validation_tests {
-    use super::validate_policy_params;
+    use super::{validate_policy_params, PolicyError};
 
     const COVERAGE: i128 = 10_000;
     const PREMIUM: i128 = 100;
@@ -271,45 +317,55 @@ mod validation_tests {
 
     #[test]
     fn accepts_sane_parameters() {
-        validate_policy_params(COVERAGE, PREMIUM, DURATION);
+        assert_eq!(validate_policy_params(COVERAGE, PREMIUM, DURATION), Ok(()));
     }
 
     #[test]
     fn accepts_a_zero_premium() {
         // A promotional or sponsored policy is legitimate; only negative is not.
-        validate_policy_params(COVERAGE, 0, DURATION);
+        assert_eq!(validate_policy_params(COVERAGE, 0, DURATION), Ok(()));
     }
 
     #[test]
-    #[should_panic(expected = "Duration must be greater than zero")]
     fn rejects_zero_duration() {
-        validate_policy_params(COVERAGE, PREMIUM, 0);
+        assert_eq!(
+            validate_policy_params(COVERAGE, PREMIUM, 0),
+            Err(PolicyError::InvalidDuration)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Coverage amount must be positive")]
     fn rejects_negative_coverage() {
         // The case that makes `total_claimed > coverage_amount` trivially true.
-        validate_policy_params(-1, PREMIUM, DURATION);
+        assert_eq!(
+            validate_policy_params(-1, PREMIUM, DURATION),
+            Err(PolicyError::InvalidCoverageAmount)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Coverage amount must be positive")]
     fn rejects_zero_coverage() {
-        validate_policy_params(0, PREMIUM, DURATION);
+        assert_eq!(
+            validate_policy_params(0, PREMIUM, DURATION),
+            Err(PolicyError::InvalidCoverageAmount)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Premium amount cannot be negative")]
     fn rejects_negative_premium() {
-        validate_policy_params(COVERAGE, -1, DURATION);
+        assert_eq!(
+            validate_policy_params(COVERAGE, -1, DURATION),
+            Err(PolicyError::InvalidPremiumAmount)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "Coverage amount must be positive")]
     fn reports_coverage_first_when_several_are_invalid() {
         // Duration is checked first, so pass a valid duration to assert the
         // coverage rule is reached rather than masked.
-        validate_policy_params(-5, -5, DURATION);
+        assert_eq!(
+            validate_policy_params(-5, -5, DURATION),
+            Err(PolicyError::InvalidCoverageAmount)
+        );
     }
 }

@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./errors/ContractErrors.sol";
-import "./storage/StorageDefinitions.sol";
+import "./ContractErrors.sol";
 import "./SecurityEvents.sol";
 
 /// @title  GovernanceManager
 /// @notice Executes governance proposals with replay protection.
 /// @dev    Inherits SecurityEvents for audit-trail emission.
-///         Storage keys are sourced exclusively from StorageDefinitions to
-///         avoid mixed persistent / temporary usage.
-///         All custom errors are imported from ContractErrors for consistency.
+///         All custom errors are imported from ContractErrors for consistency
+///         (#50) — this is the canonical GovernanceManager; see src/lib.rs for
+///         the duplicate that predates this convergence.
 contract GovernanceManager is SecurityEvents {
 
     // -------------------------------------------------------------------------
@@ -18,8 +17,6 @@ contract GovernanceManager is SecurityEvents {
     // -------------------------------------------------------------------------
 
     /// @dev Tracks executed proposal IDs.
-    ///      Slot declared via StorageDefinitions to prevent inheritance
-    ///      conflicts across the contract suite.
     mapping(bytes32 => bool) private _executedProposals;
 
     // -------------------------------------------------------------------------
