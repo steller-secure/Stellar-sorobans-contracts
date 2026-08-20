@@ -55,8 +55,10 @@ impl PolicyContract {
         duration_days: u32,
         policy_type: PolicyType,
     ) -> u64 {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        // The admin was previously read twice here: once directly from storage
+        // and again through `get_admin`, with the first binding immediately
+        // shadowed and discarded. `get_admin` performs the same read and
+        // carries the same not-initialised panic.
         let admin = get_admin(&env);
         admin.require_auth();
 
