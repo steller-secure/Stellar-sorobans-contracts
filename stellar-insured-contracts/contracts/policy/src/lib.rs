@@ -60,6 +60,9 @@ impl PolicyContract {
         let admin = get_admin(&env);
         admin.require_auth();
 
+        // #52: reject parameters that would produce an incoherent policy.
+        validate_policy_params(coverage_amount, premium_amount, duration_days);
+
         let mut counter = get_policy_counter(&env);
         counter += 1;
         env.storage().instance().set(&DataKey::PolicyCounter, &counter);
@@ -202,14 +205,9 @@ impl PolicyContract {
 
 #[contractimpl]
 impl PolicyContract {
-    pub fn get_policy(env: Env, policy_id: u64) -> InsurancePolicy {
-        get_policy_inner(&env, policy_id)
-    }
-
-    // Alias used by claims contract cross-contract call
-    pub fn get_pol(env: Env, policy_id: u64) -> InsurancePolicy {
-        get_policy_inner(&env, policy_id)
-    }
+    // `get_policy` and `get_pol` are defined in the primary impl block above.
+    // They were duplicated here verbatim, which made the crate fail to compile
+    // with E0592 duplicate definitions.
 
     pub fn get_stats(env: Env) -> u64 {
         get_policy_counter(&env)
@@ -227,5 +225,89 @@ impl PolicyContract {
             (symbol_short!("policy"), symbol_short!("updated")),
             policy_id,
         );
+    }
+}
+
+// ─── Input validation (#52) ───────────────────────────────────────────────────
+
+/// Validate the financially significant parameters of a new policy.
+///
+/// Kept as a free function over primitives, with no `Env`, so the rules are
+/// unit-testable without the Soroban test harness.
+///
+/// Each check exists because the value is used in arithmetic or comparison that
+/// silently produces nonsense otherwise:
+///
+/// * `duration_days == 0` yields `expiry = start_time + 0`, i.e. a policy that
+///   is already expired the moment it is issued.
+/// * `coverage_amount < 0` makes `total_claimed > coverage_amount` trivially
+///   true — `total_claimed` starts at 0, and 0 exceeds any negative value — so
+///   claims become payable against a policy with no coverage.
+/// * `coverage_amount == 0` is a policy that can never pay out; issuing one
+///   takes a premium for nothing.
+/// * `premium_amount < 0` corrupts pool accounting, since the premium is added
+///   to pool capital.
+pub fn validate_policy_params(coverage_amount: i128, premium_amount: i128, duration_days: u32) {
+    if duration_days == 0 {
+        panic!("Duration must be greater than zero");
+    }
+    if coverage_amount <= 0 {
+        panic!("Coverage amount must be positive");
+    }
+    if premium_amount < 0 {
+        panic!("Premium amount cannot be negative");
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::validate_policy_params;
+
+    const COVERAGE: i128 = 10_000;
+    const PREMIUM: i128 = 100;
+    const DURATION: u32 = 30;
+
+    #[test]
+    fn accepts_sane_parameters() {
+        validate_policy_params(COVERAGE, PREMIUM, DURATION);
+    }
+
+    #[test]
+    fn accepts_a_zero_premium() {
+        // A promotional or sponsored policy is legitimate; only negative is not.
+        validate_policy_params(COVERAGE, 0, DURATION);
+    }
+
+    #[test]
+    #[should_panic(expected = "Duration must be greater than zero")]
+    fn rejects_zero_duration() {
+        validate_policy_params(COVERAGE, PREMIUM, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Coverage amount must be positive")]
+    fn rejects_negative_coverage() {
+        // The case that makes `total_claimed > coverage_amount` trivially true.
+        validate_policy_params(-1, PREMIUM, DURATION);
+    }
+
+    #[test]
+    #[should_panic(expected = "Coverage amount must be positive")]
+    fn rejects_zero_coverage() {
+        validate_policy_params(0, PREMIUM, DURATION);
+    }
+
+    #[test]
+    #[should_panic(expected = "Premium amount cannot be negative")]
+    fn rejects_negative_premium() {
+        validate_policy_params(COVERAGE, -1, DURATION);
+    }
+
+    #[test]
+    #[should_panic(expected = "Coverage amount must be positive")]
+    fn reports_coverage_first_when_several_are_invalid() {
+        // Duration is checked first, so pass a valid duration to assert the
+        // coverage rule is reached rather than masked.
+        validate_policy_params(-5, -5, DURATION);
     }
 }

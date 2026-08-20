@@ -106,6 +106,10 @@ impl GovernanceContract {
     ) -> u64 {
         creator.require_auth();
 
+        // #52: an unbounded threshold yields a proposal that cannot pass, or
+        // one that passes with no support.
+        validate_threshold_percentage(threshold_percentage);
+
         let mut counter = get_proposal_counter(&env);
         counter += 1;
         env.storage().instance().set(&DataKey::ProposalCounter, &counter);
@@ -147,6 +151,9 @@ impl GovernanceContract {
         threshold: u32,
     ) -> u64 {
         creator.require_auth();
+
+        // #52: same bounds as an ordinary proposal.
+        validate_threshold_percentage(threshold);
 
         let title = String::from_str(&env, "Slashing Proposal");
         let execution_data = String::from_str(&env, "slash_call");
@@ -430,9 +437,8 @@ impl GovernanceContract {
     pub fn set_min_quorum_percentage(env: Env, value: u32) {
         let admin = get_admin(&env);
         admin.require_auth();
-        if value > 100 {
-            panic!("Quorum percentage cannot exceed 100");
-        }
+        // #52: the previous check admitted zero, which disables quorum entirely.
+        validate_quorum_percentage(value);
         env.storage().instance().set(&DataKey::MinQuorumPercentage, &value);
     }
 }
@@ -668,3 +674,78 @@ mod tests {
     }
 }
 
+// ─── Input validation (#52) ───────────────────────────────────────────────────
+
+/// Validate a quorum percentage.
+///
+/// The existing check rejected values above 100 but admitted zero, which
+/// disables the quorum requirement entirely: any proposal with a single vote
+/// would meet a 0% quorum. A quorum of nothing is not a quorum.
+pub fn validate_quorum_percentage(value: u32) {
+    if value == 0 {
+        panic!("Quorum percentage must be greater than zero");
+    }
+    if value > 100 {
+        panic!("Quorum percentage cannot exceed 100");
+    }
+}
+
+/// Validate a proposal approval threshold.
+///
+/// Unbounded before: a threshold above 100 makes a proposal mathematically
+/// impossible to pass, and zero makes it pass with no support at all. Both
+/// produce a proposal that looks valid and cannot behave sensibly.
+pub fn validate_threshold_percentage(value: u32) {
+    if value == 0 {
+        panic!("Threshold percentage must be greater than zero");
+    }
+    if value > 100 {
+        panic!("Threshold percentage cannot exceed 100");
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{validate_quorum_percentage, validate_threshold_percentage};
+
+    #[test]
+    fn quorum_accepts_the_valid_range() {
+        for value in [1, 50, 100] {
+            validate_quorum_percentage(value);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Quorum percentage must be greater than zero")]
+    fn quorum_rejects_zero() {
+        // The gap in the original check: > 100 was rejected, 0 was not.
+        validate_quorum_percentage(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Quorum percentage cannot exceed 100")]
+    fn quorum_rejects_above_one_hundred() {
+        validate_quorum_percentage(101);
+    }
+
+    #[test]
+    fn threshold_accepts_the_valid_range() {
+        for value in [1, 51, 100] {
+            validate_threshold_percentage(value);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Threshold percentage must be greater than zero")]
+    fn threshold_rejects_zero() {
+        // Would let a proposal pass with no support.
+        validate_threshold_percentage(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Threshold percentage cannot exceed 100")]
+    fn threshold_rejects_above_one_hundred() {
+        // Would make the proposal impossible to pass.
+        validate_threshold_percentage(101);
+    }
+}
