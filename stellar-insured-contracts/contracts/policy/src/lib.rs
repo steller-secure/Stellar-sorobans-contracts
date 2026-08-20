@@ -127,12 +127,15 @@ impl PolicyContract {
 
         // #407: Ensure policy hasn't expired before renewal
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
         if now > expiry {
             panic!("Policy has expired and cannot be renewed");
         }
 
-        policy.duration_days += duration_days;
+        policy.duration_days = policy.duration_days.checked_add(duration_days).expect("Total duration overflow");
+        // Re-validate to ensure even after renewal, the total duration is still within safe limits
+        validate_policy_params(policy.coverage_amount, policy.premium_amount, policy.duration_days);
         policy.status = PolicyStatus::Renewed;
 
         set_policy(&env, policy_id, &policy);
@@ -150,7 +153,8 @@ impl PolicyContract {
 
         // #407: Ensure policy hasn't expired before cancellation
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
         if now > expiry {
             panic!("Policy has already expired");
         }
@@ -189,7 +193,8 @@ impl PolicyContract {
         let mut policy = get_policy_inner(&env, policy_id);
 
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
 
         if now < expiry {
             panic!("Policy not yet expired");

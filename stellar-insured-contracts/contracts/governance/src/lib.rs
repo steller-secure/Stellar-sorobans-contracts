@@ -80,6 +80,15 @@ impl GovernanceContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("Already initialized");
         }
+        // Validate voting period is reasonable to prevent overflow in expiry calculations
+        if voting_period == 0 {
+            panic!("Voting period must be greater than zero");
+        }
+        // Maximum voting period to prevent overflow: u64::MAX / 2 is a safe limit that
+        // ensures even if current timestamp is large, adding voting_period won't overflow
+        if voting_period > u64::MAX / 2 {
+            panic!("Voting period is too large");
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::SlashingContract, &slashing_contract);
