@@ -114,8 +114,10 @@ impl GovernanceContract {
         counter += 1;
         env.storage().instance().set(&DataKey::ProposalCounter, &counter);
 
-        let voting_period: u64 = env.storage().instance().get(&DataKey::VotingPeriod)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        // Read once and reuse. This previously read VotingPeriod directly and
+        // then called `get_voting_period`, which reads the same key again — so
+        // the binding below was dead and the storage access doubled.
+        let voting_period = get_voting_period(&env);
         
         let proposal = Proposal {
             id: counter,
@@ -123,7 +125,7 @@ impl GovernanceContract {
             description,
             execution_data,
             creator: creator.clone(),
-            expires_at: env.ledger().timestamp() + get_voting_period(&env),
+            expires_at: env.ledger().timestamp() + voting_period,
             threshold_percentage,
             yes_votes: 0,
             no_votes: 0,
@@ -203,8 +205,10 @@ impl GovernanceContract {
         counter += 1;
         env.storage().instance().set(&DataKey::ProposalCounter, &counter);
 
-        let voting_period: u64 = env.storage().instance().get(&DataKey::VotingPeriod)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        // Read once and reuse. This previously read VotingPeriod directly and
+        // then called `get_voting_period`, which reads the same key again — so
+        // the binding below was dead and the storage access doubled.
+        let voting_period = get_voting_period(&env);
 
         let proposal = Proposal {
             id: counter,
@@ -252,8 +256,10 @@ impl GovernanceContract {
         counter += 1;
         env.storage().instance().set(&DataKey::ProposalCounter, &counter);
 
-        let voting_period: u64 = env.storage().instance().get(&DataKey::VotingPeriod)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        // Read once and reuse. This previously read VotingPeriod directly and
+        // then called `get_voting_period`, which reads the same key again — so
+        // the binding below was dead and the storage access doubled.
+        let voting_period = get_voting_period(&env);
 
         let proposal = Proposal {
             id: counter,
