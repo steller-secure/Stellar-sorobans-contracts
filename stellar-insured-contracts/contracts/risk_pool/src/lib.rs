@@ -1,6 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env};
+use stellar_insured_lib::PoolStats;
 
 #[contracttype]
 #[derive(Clone)]
@@ -11,15 +12,8 @@ pub enum DataKey {
     TotalCapital,
     AvailableCapital,
     ClaimsPaid,
+    ProviderCount,
     ProviderStake(Address),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PoolStats {
-    pub total_capital: i128,
-    pub available_capital: i128,
-    pub total_claims_paid: i128,
 }
 
 // --- Storage helpers (#378: data access abstraction) ---
@@ -44,6 +38,10 @@ fn get_provider_stake(env: &Env, provider: &Address) -> i128 {
     env.storage().persistent().get(&DataKey::ProviderStake(provider.clone())).unwrap_or(0)
 }
 
+fn get_provider_count(env: &Env) -> u32 {
+    env.storage().instance().get(&DataKey::ProviderCount).unwrap_or(0)
+}
+
 // --------------------------------------------------------
 
 #[contract]
@@ -63,6 +61,7 @@ impl RiskPoolContract {
         env.storage().instance().set(&DataKey::TotalCapital, &0i128);
         env.storage().instance().set(&DataKey::AvailableCapital, &0i128);
         env.storage().instance().set(&DataKey::ClaimsPaid, &0i128);
+        env.storage().instance().set(&DataKey::ProviderCount, &0u32);
     }
 
     pub fn deposit_liquidity(env: Env, provider: Address, amount: i128) {
@@ -89,6 +88,12 @@ impl RiskPoolContract {
         let current_stake = get_provider_stake(&env, &provider);
         let new_stake = current_stake + amount;
         env.storage().persistent().set(&DataKey::ProviderStake(provider.clone()), &new_stake);
+
+        // If this is a new provider, increment provider count
+        if current_stake == 0 {
+            let current_provider_count = get_provider_count(&env);
+            env.storage().instance().set(&DataKey::ProviderCount, &(current_provider_count + 1));
+        }
 
         let new_total = get_total_capital(&env) + amount;
         let new_available = get_available_capital(&env) + amount;
@@ -126,6 +131,12 @@ impl RiskPoolContract {
 
         let new_stake = stake - amount;
         env.storage().persistent().set(&DataKey::ProviderStake(provider.clone()), &new_stake);
+
+        // If provider withdrew all their stake, decrement provider count
+        if new_stake == 0 {
+            let current_provider_count = get_provider_count(&env);
+            env.storage().instance().set(&DataKey::ProviderCount, &(current_provider_count - 1));
+        }
         
         let new_total = get_total_capital(&env) - amount;
         let new_available = avail - amount;
@@ -175,6 +186,7 @@ impl RiskPoolContract {
             total_capital: get_total_capital(&env),
             available_capital: get_available_capital(&env),
             total_claims_paid: env.storage().instance().get(&DataKey::ClaimsPaid).unwrap_or(0),
+            provider_count: get_provider_count(&env),
         }
     }
 
