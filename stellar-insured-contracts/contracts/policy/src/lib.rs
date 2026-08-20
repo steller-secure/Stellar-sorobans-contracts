@@ -112,7 +112,8 @@ impl PolicyContract {
         }
 
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
         now <= expiry
     }
 
@@ -252,6 +253,10 @@ impl PolicyContract {
 pub fn validate_policy_params(coverage_amount: i128, premium_amount: i128, duration_days: u32) {
     if duration_days == 0 {
         panic!("Duration must be greater than zero");
+    }
+    // Prevent overflow in duration calculation: duration_days * 86400 must fit in u64
+    if duration_days > 2135 {
+        panic!("Duration too large: maximum 2135 days allowed");
     }
     if coverage_amount <= 0 {
         panic!("Coverage amount must be positive");
