@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Vec, Address};
+use soroban_sdk::{Env, IntoVal, TryFromVal, Val, Vec, Address};
 
 pub struct Randomness;
 
@@ -10,16 +10,23 @@ impl Randomness {
     }
 
     /// Selects a random item from a Vec.
-    pub fn select_one<T: Clone>(env: &Env, items: Vec<T>) -> Option<T> {
+    pub fn select_one<T>(env: &Env, items: Vec<T>) -> Option<T>
+    where
+        T: Clone + IntoVal<Env, Val> + TryFromVal<Env, Val>,
+    {
         if items.is_empty() {
             return None;
         }
-        let index = env.prng().gen_range(0..items.len());
+        // `gen_range` is implemented for u64 in this SDK; `Vec::len` yields u32.
+        let index = env.prng().gen_range::<u64>(0..items.len() as u64) as u32;
         Some(items.get(index).unwrap())
     }
 
     /// Selects multiple unique items from a Vec (e.g., for auditor selection).
-    pub fn select_multiple<T: Clone + PartialEq>(env: &Env, items: Vec<T>, count: u32) -> Vec<T> {
+    pub fn select_multiple<T>(env: &Env, items: Vec<T>, count: u32) -> Vec<T>
+    where
+        T: Clone + PartialEq + IntoVal<Env, Val> + TryFromVal<Env, Val>,
+    {
         if items.len() <= count {
             return items;
         }
@@ -28,7 +35,7 @@ impl Randomness {
         let mut available = items;
 
         for _ in 0..count {
-            let index = env.prng().gen_range(0..available.len());
+            let index = env.prng().gen_range::<u64>(0..available.len() as u64) as u32;
             let item = available.get(index).unwrap();
             selected.push_back(item.clone());
             available.remove(index);
