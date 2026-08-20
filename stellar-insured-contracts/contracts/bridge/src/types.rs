@@ -1,4 +1,33 @@
-use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
+use soroban_sdk::{contracterror, contracttype, Address, BytesN, String, Vec};
+
+/// Typed errors for the Bridge contract — enables callers to match on
+/// specific failure reasons rather than parsing panic messages, and avoids
+/// paying to encode/store human-readable strings in the WASM binary and
+/// revert data (#50).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum BridgeError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    InvalidConfig = 3,
+    InvalidParameter = 4,
+    InvalidTimestamp = 5,
+    InvalidNonce = 6,
+    BridgePaused = 7,
+    UnsupportedChain = 8,
+    InvalidSignatureRequirement = 9,
+    NotOperator = 10,
+    Unauthorized = 11,
+    RequestNotFound = 12,
+    RequestNotPending = 13,
+    RequestExpired = 14,
+    AlreadySigned = 15,
+    RequestNotReady = 16,
+    RequestNotFailed = 17,
+    TooManyOperators = 18,
+    OperatorRemovalWouldBreakQuorum = 19,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[contracttype]

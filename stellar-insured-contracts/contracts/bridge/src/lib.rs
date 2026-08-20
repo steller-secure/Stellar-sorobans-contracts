@@ -10,7 +10,7 @@ use soroban_sdk::{contract, contractimpl, symbol_short, Address, Bytes, Env, Str
 
 use storage::{DataKey, MAX_HISTORY_ITEMS};
 use types::{
-    BridgeConfig, BridgeOperationStatus, BridgeTransaction, ChainBridgeInfo,
+    BridgeConfig, BridgeError, BridgeOperationStatus, BridgeTransaction, ChainBridgeInfo,
     MultisigBridgeRequest, PropertyMetadata, RecoveryAction,
 };
 use validation::{
@@ -37,31 +37,31 @@ impl PropertyBridge {
         default_timeout: u64,
         gas_limit: u64,
         service_fee: i128,
-        fee_token: Address, 
+        fee_token: Address,
         fee_recipient: Address,
-    ) {
+    ) -> Result<(), BridgeError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            return Err(BridgeError::AlreadyInitialized);
         }
-        require_non_zero_address(&admin);
-        require_non_zero_address(&fee_token);
-        require_non_zero_address(&fee_recipient);
+        require_non_zero_address(&admin)?;
+        require_non_zero_address(&fee_token)?;
+        require_non_zero_address(&fee_recipient)?;
         if supported_chains.is_empty() {
-            panic!("At least one supported chain is required");
+            return Err(BridgeError::InvalidConfig);
         }
-        require_non_zero_u32(min_signatures, "min_signatures");
-        require_non_zero_u32(max_signatures, "max_signatures");
-        require_non_zero_u64(default_timeout, "default_timeout");
-        require_non_zero_u64(gas_limit, "gas_limit");
+        require_non_zero_u32(min_signatures)?;
+        require_non_zero_u32(max_signatures)?;
+        require_non_zero_u64(default_timeout)?;
+        require_non_zero_u64(gas_limit)?;
 
         if supported_chains.len() > MAX_SUPPORTED_CHAINS {
-            panic!("Too many chains");
+            return Err(BridgeError::InvalidConfig);
         }
         for chain_id in supported_chains.iter() {
-            require_non_zero_u32(chain_id, "supported_chain");
+            require_non_zero_u32(chain_id)?;
         }
         if min_signatures > max_signatures {
-            panic!("min_signatures cannot exceed max_signatures");
+            return Err(BridgeError::InvalidConfig);
         }
 
         let config = BridgeConfig {
@@ -101,11 +101,13 @@ impl PropertyBridge {
                 .persistent()
                 .set(&DataKey::ChainInfo(chain_id), &chain_info);
         }
-        
+
         env.events().publish(
             (symbol_short!("bridge"), symbol_short!("init")),
             (admin, min_signatures, max_signatures),
         );
+
+        Ok(())
     }
 
     pub fn initiate_bridge_multisig(
@@ -118,30 +120,33 @@ impl PropertyBridge {
         timeout_seconds: Option<u64>,
         metadata: PropertyMetadata,
         nonce: u64,
-    ) -> u64 {
+    ) -> Result<u64, BridgeError> {
         caller.require_auth();
-        require_non_zero_address(&caller);
-        require_non_zero_address(&recipient);
-        require_non_zero_u64(token_id, "token_id");
-        require_non_zero_u32(required_signatures, "required_signatures");
-        require_non_zero_u64(metadata.size, "metadata.size");
-        require_non_zero_u128(metadata.valuation, "metadata.valuation");
+        require_non_zero_address(&caller)?;
+        require_non_zero_address(&recipient)?;
+        require_non_zero_u64(token_id)?;
+        require_non_zero_u32(required_signatures)?;
+        require_non_zero_u64(metadata.size)?;
+        require_non_zero_u128(metadata.valuation)?;
         if let Some(seconds) = timeout_seconds {
-            require_non_zero_u64(seconds, "timeout_seconds");
+            require_non_zero_u64(seconds)?;
         }
 
         let current_nonce: u64 = env.storage().persistent().get(&DataKey::Nonce(caller.clone())).unwrap_or(0);
         if nonce != current_nonce + 1 {
-            panic!("Invalid nonce");
+            return Err(BridgeError::InvalidNonce);
         }
         env.storage().persistent().set(&DataKey::Nonce(caller.clone()), &nonce);
 
-        let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        let config: BridgeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(BridgeError::NotInitialized)?;
 
-        require_not_paused(&env);
-        require_supported_chain(&config, destination_chain);
-        require_valid_signatures(&config, required_signatures);
+        require_not_paused(&env)?;
+        require_supported_chain(&config, destination_chain)?;
+        require_valid_signatures(&config, required_signatures)?;
 
         let mut counter: u64 = env
             .storage()
@@ -162,9 +167,9 @@ impl PropertyBridge {
 
         let now = env.ledger().timestamp();
         let expires_at = timeout_seconds.map(|s| now + s);
-        
+
         if let Some(expiry) = expires_at {
-            require_future_timestamp(expiry, now, "expires_at");
+            require_future_timestamp(expiry, now)?;
         }
 
         let request = MultisigBridgeRequest {
@@ -192,34 +197,34 @@ impl PropertyBridge {
             (counter, token_id, caller),
         );
 
-        counter
+        Ok(counter)
     }
 
-    pub fn sign_bridge_request(env: Env, operator: Address, request_id: u64, approve: bool) {
+    pub fn sign_bridge_request(env: Env, operator: Address, request_id: u64, approve: bool) -> Result<(), BridgeError> {
         operator.require_auth();
-        require_non_zero_address(&operator);
-        require_non_zero_u64(request_id, "request_id");
-        require_operator(&env, &operator);
-        require_not_paused(&env);
+        require_non_zero_address(&operator)?;
+        require_non_zero_u64(request_id)?;
+        require_operator(&env, &operator)?;
+        require_not_paused(&env)?;
 
         let mut request: MultisigBridgeRequest = env
             .storage()
             .persistent()
             .get(&DataKey::Request(request_id))
-            .expect("Request not found");
+            .ok_or(BridgeError::RequestNotFound)?;
 
         if request.status != BridgeOperationStatus::Pending {
-            panic!("Request not pending");
+            return Err(BridgeError::RequestNotPending);
         }
 
         if let Some(expires_at) = request.expires_at {
             if env.ledger().timestamp() > expires_at {
-                panic!("Request expired");
+                return Err(BridgeError::RequestExpired);
             }
         }
 
         if request.signatures.contains(operator.clone()) || request.rejections.contains(operator.clone()) {
-            panic!("Already signed");
+            return Err(BridgeError::AlreadySigned);
         }
 
         if approve {
@@ -237,28 +242,30 @@ impl PropertyBridge {
         env.storage()
             .persistent()
             .set(&DataKey::Request(request_id), &request);
-        
+
         env.events().publish(
             (symbol_short!("bridge"), symbol_short!("signed")),
             (request_id, operator, approve),
         );
+
+        Ok(())
     }
 
-    pub fn execute_bridge(env: Env, operator: Address, request_id: u64) {
+    pub fn execute_bridge(env: Env, operator: Address, request_id: u64) -> Result<(), BridgeError> {
         operator.require_auth();
-        require_non_zero_address(&operator);
-        require_non_zero_u64(request_id, "request_id");
-        require_operator(&env, &operator);
-        require_not_paused(&env);
+        require_non_zero_address(&operator)?;
+        require_non_zero_u64(request_id)?;
+        require_operator(&env, &operator)?;
+        require_not_paused(&env)?;
 
         let mut request: MultisigBridgeRequest = env
             .storage()
             .persistent()
             .get(&DataKey::Request(request_id))
-            .expect("Request not found");
+            .ok_or(BridgeError::RequestNotFound)?;
 
         if request.status != BridgeOperationStatus::Locked {
-            panic!("Request not ready");
+            return Err(BridgeError::RequestNotReady);
         }
 
         let tx_hash = env
@@ -296,8 +303,11 @@ impl PropertyBridge {
 
         if let Some(fee) = env.storage().persistent().get::<_, i128>(&DataKey::FeeEscrow(request_id)) {
             if fee > 0 {
-                let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
-                    .unwrap_or_else(|| panic!("Contract not initialized"));
+                let config: BridgeConfig = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Config)
+                    .ok_or(BridgeError::NotInitialized)?;
                 use soroban_sdk::token;
                 let client = token::Client::new(&env, &config.fee_token);
                 client.transfer(&env.current_contract_address(), &config.fee_recipient, &fee);
@@ -327,6 +337,8 @@ impl PropertyBridge {
             (symbol_short!("bridge"), symbol_short!("executed")),
             (request_id, tx_hash),
         );
+
+        Ok(())
     }
 
     pub fn recover_failed_bridge(
@@ -334,30 +346,33 @@ impl PropertyBridge {
         admin: Address,
         request_id: u64,
         recovery_action: RecoveryAction,
-    ) {
+    ) -> Result<(), BridgeError> {
         admin.require_auth();
-        require_non_zero_address(&admin);
-        require_non_zero_u64(request_id, "request_id");
-        require_admin(&env, &admin);
-        require_not_paused(&env);
+        require_non_zero_address(&admin)?;
+        require_non_zero_u64(request_id)?;
+        require_admin(&env, &admin)?;
+        require_not_paused(&env)?;
 
         let mut request: MultisigBridgeRequest = env
             .storage()
             .persistent()
             .get(&DataKey::Request(request_id))
-            .expect("Request not found");
+            .ok_or(BridgeError::RequestNotFound)?;
 
         if !matches!(
             request.status,
             BridgeOperationStatus::Failed | BridgeOperationStatus::Expired
         ) {
-            panic!("Request not in failed state");
+            return Err(BridgeError::RequestNotFailed);
         }
 
         if let Some(fee) = env.storage().persistent().get::<_, i128>(&DataKey::FeeEscrow(request_id)) {
             if fee > 0 {
-                let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
-                    .unwrap_or_else(|| panic!("Contract not initialized"));
+                let config: BridgeConfig = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Config)
+                    .ok_or(BridgeError::NotInitialized)?;
                 use soroban_sdk::token;
                 let client = token::Client::new(&env, &config.fee_token);
                 client.transfer(&env.current_contract_address(), &request.sender, &fee);
@@ -381,69 +396,85 @@ impl PropertyBridge {
         env.storage()
             .persistent()
             .set(&DataKey::Request(request_id), &request);
-        
+
         env.events().publish(
             (symbol_short!("bridge"), symbol_short!("recover")),
             request_id,
         );
+
+        Ok(())
     }
 
-    pub fn set_pause(env: Env, admin: Address, paused: bool) {
+    pub fn set_pause(env: Env, admin: Address, paused: bool) -> Result<(), BridgeError> {
         admin.require_auth();
-        require_non_zero_address(&admin);
-        require_admin(&env, &admin);
+        require_non_zero_address(&admin)?;
+        require_admin(&env, &admin)?;
 
-        let mut config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        let mut config: BridgeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(BridgeError::NotInitialized)?;
         config.emergency_pause = paused;
         env.storage().instance().set(&DataKey::Config, &config);
-        
+
         env.events().publish(
             (symbol_short!("bridge"), symbol_short!("pause")),
             paused,
         );
+
+        Ok(())
     }
 
-    pub fn add_operator(env: Env, admin: Address, operator: Address) {
+    pub fn add_operator(env: Env, admin: Address, operator: Address) -> Result<(), BridgeError> {
         admin.require_auth();
-        require_non_zero_address(&admin);
-        require_non_zero_address(&operator);
-        require_admin(&env, &admin);
+        require_non_zero_address(&admin)?;
+        require_non_zero_address(&operator)?;
+        require_admin(&env, &admin)?;
 
-        let mut operators: Vec<Address> =
-            env.storage().instance().get(&DataKey::Operators)
-                .unwrap_or_else(|| panic!("Contract not initialized"));
-        
+        let mut operators: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Operators)
+            .ok_or(BridgeError::NotInitialized)?;
+
         if operators.len() >= MAX_OPERATORS {
-            panic!("Too many operators");
+            return Err(BridgeError::TooManyOperators);
         }
 
         if !operators.contains(operator.clone()) {
             operators.push_back(operator.clone());
             env.storage().instance().set(&DataKey::Operators, &operators);
-            
+
             env.events().publish(
                 (symbol_short!("bridge"), symbol_short!("opadd")),
                 operator,
             );
         }
+
+        Ok(())
     }
 
-    pub fn remove_operator(env: Env, admin: Address, operator: Address) {
+    pub fn remove_operator(env: Env, admin: Address, operator: Address) -> Result<(), BridgeError> {
         admin.require_auth();
-        require_non_zero_address(&admin);
-        require_non_zero_address(&operator);
-        require_admin(&env, &admin);
+        require_non_zero_address(&admin)?;
+        require_non_zero_address(&operator)?;
+        require_admin(&env, &admin)?;
 
-        let operators: Vec<Address> =
-            env.storage().instance().get(&DataKey::Operators)
-                .unwrap_or_else(|| panic!("Contract not initialized"));
-        
-        let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
+        let operators: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Operators)
+            .ok_or(BridgeError::NotInitialized)?;
+
+        let config: BridgeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .ok_or(BridgeError::NotInitialized)?;
 
         if operators.len() <= config.min_signatures_required {
-            panic!("Cannot remove operator: minimum signature requirement would not be met");
+            return Err(BridgeError::OperatorRemovalWouldBreakQuorum);
         }
 
         let mut new_operators = Vec::new(&env);
@@ -453,11 +484,13 @@ impl PropertyBridge {
             }
         }
         env.storage().instance().set(&DataKey::Operators, &new_operators);
-        
+
         env.events().publish(
             (symbol_short!("bridge"), symbol_short!("oprm")),
             operator,
         );
+
+        Ok(())
     }
 }
 
@@ -470,18 +503,18 @@ impl PropertyBridge {
             .unwrap_or(CONTRACT_VERSION)
     }
 
-    pub fn get_config(env: Env) -> BridgeConfig {
+    pub fn get_config(env: Env) -> Result<BridgeConfig, BridgeError> {
         env.storage()
             .instance()
             .get(&DataKey::Config)
-            .expect("Contract not initialized")
+            .ok_or(BridgeError::NotInitialized)
     }
 
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, BridgeError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized")
+            .ok_or(BridgeError::NotInitialized)
     }
 
     pub fn get_request(env: Env, request_id: u64) -> Option<MultisigBridgeRequest> {
