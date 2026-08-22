@@ -1,93 +1,104 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::storage::DataKey;
-use crate::types::BridgeConfig;
+use crate::types::{BridgeConfig, BridgeError};
 
-/// Panics if the bridge is paused.
+/// Returns `BridgeError::BridgePaused` if the bridge is paused.
 ///
 /// Reads the config from storage via `&Env` — consistent with the escrow
 /// contract's `require_not_paused` signature so all validation helpers
 /// follow the same `&Env` convention (#353).
-pub fn require_not_paused(env: &Env) {
+pub fn require_not_paused(env: &Env) -> Result<(), BridgeError> {
     let config: BridgeConfig = env
         .storage()
         .instance()
         .get(&DataKey::Config)
-        .unwrap_or_else(|| panic!("Contract not initialized"));
+        .ok_or(BridgeError::NotInitialized)?;
     if config.emergency_pause {
-        panic!("Bridge paused");
+        return Err(BridgeError::BridgePaused);
     }
+    Ok(())
 }
 
-/// Panics if `destination_chain` is not in the supported chains list.
-pub fn require_supported_chain(config: &BridgeConfig, destination_chain: u32) {
+/// Returns `BridgeError::UnsupportedChain` if `destination_chain` is not in
+/// the supported chains list.
+pub fn require_supported_chain(config: &BridgeConfig, destination_chain: u32) -> Result<(), BridgeError> {
     if !config.supported_chains.contains(destination_chain) {
-        panic!("Unsupported chain");
+        return Err(BridgeError::UnsupportedChain);
     }
+    Ok(())
 }
 
-/// Panics if `required_signatures` is outside the configured [min, max] range.
-pub fn require_valid_signatures(config: &BridgeConfig, required_signatures: u32) {
+/// Returns `BridgeError::InvalidSignatureRequirement` if `required_signatures`
+/// is outside the configured [min, max] range.
+pub fn require_valid_signatures(config: &BridgeConfig, required_signatures: u32) -> Result<(), BridgeError> {
     if required_signatures < config.min_signatures_required
         || required_signatures > config.max_signatures_required
     {
-        panic!("Invalid signature requirement");
+        return Err(BridgeError::InvalidSignatureRequirement);
     }
+    Ok(())
 }
 
-/// Panics if `caller` is not in the operators list.
-pub fn require_operator(env: &Env, caller: &Address) {
+/// Returns `BridgeError::NotOperator` if `caller` is not in the operators list.
+pub fn require_operator(env: &Env, caller: &Address) -> Result<(), BridgeError> {
     let operators: Vec<Address> = env
         .storage()
         .instance()
         .get(&DataKey::Operators)
-        .unwrap_or_else(|| panic!("Contract not initialized"));
+        .ok_or(BridgeError::NotInitialized)?;
     if !operators.contains(caller.clone()) {
-        panic!("Not an operator");
+        return Err(BridgeError::NotOperator);
     }
+    Ok(())
 }
 
-/// Panics if `caller` is not the stored admin.
-pub fn require_admin(env: &Env, caller: &Address) {
+/// Returns `BridgeError::Unauthorized` if `caller` is not the stored admin.
+pub fn require_admin(env: &Env, caller: &Address) -> Result<(), BridgeError> {
     let admin: Address = env
         .storage()
         .instance()
         .get(&DataKey::Admin)
-        .unwrap_or_else(|| panic!("Contract not initialized"));
+        .ok_or(BridgeError::NotInitialized)?;
     if *caller != admin {
-        panic!("Unauthorized");
+        return Err(BridgeError::Unauthorized);
     }
+    Ok(())
 }
 
-/// Panics if `address` is zero (all bytes zero).
-pub fn require_non_zero_address(_address: &Address) {
-    // No-op in Soroban as Address is always a valid host-managed object and cannot be zero.
+/// No-op in Soroban as Address is always a valid host-managed object and cannot be zero.
+pub fn require_non_zero_address(_address: &Address) -> Result<(), BridgeError> {
+    Ok(())
 }
 
-/// Panics if the value is zero.
-pub fn require_non_zero_u32(value: u32, field: &str) {
+/// Returns `BridgeError::InvalidParameter` if the value is zero.
+pub fn require_non_zero_u32(value: u32) -> Result<(), BridgeError> {
     if value == 0 {
-        panic!("{} must be greater than zero", field);
+        return Err(BridgeError::InvalidParameter);
     }
+    Ok(())
 }
 
-/// Panics if the value is zero.
-pub fn require_non_zero_u64(value: u64, field: &str) {
+/// Returns `BridgeError::InvalidParameter` if the value is zero.
+pub fn require_non_zero_u64(value: u64) -> Result<(), BridgeError> {
     if value == 0 {
-        panic!("{} must be greater than zero", field);
+        return Err(BridgeError::InvalidParameter);
     }
+    Ok(())
 }
 
-/// Panics if the value is zero.
-pub fn require_non_zero_u128(value: u128, field: &str) {
+/// Returns `BridgeError::InvalidParameter` if the value is zero.
+pub fn require_non_zero_u128(value: u128) -> Result<(), BridgeError> {
     if value == 0 {
-        panic!("{} must be greater than zero", field);
+        return Err(BridgeError::InvalidParameter);
     }
+    Ok(())
 }
 
-/// Panics if the timestamp is not in the future.
-pub fn require_future_timestamp(timestamp: u64, now: u64, field: &str) {
+/// Returns `BridgeError::InvalidTimestamp` if the timestamp is not in the future.
+pub fn require_future_timestamp(timestamp: u64, now: u64) -> Result<(), BridgeError> {
     if timestamp <= now {
-        panic!("{} must be in the future", field);
+        return Err(BridgeError::InvalidTimestamp);
     }
+    Ok(())
 }

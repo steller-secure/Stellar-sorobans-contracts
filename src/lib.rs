@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./ContractErrors.sol";
 import "./SecurityEvents.sol";
 
+/// @dev All custom errors are imported from ContractErrors for consistency
+///      (#50). This contract duplicates libs.sol's GovernanceManager; see
+///      that file for the canonical version.
 contract GovernanceManager is SecurityEvents {
     mapping(bytes32 => bool) public executedProposals;
 
@@ -12,7 +16,9 @@ contract GovernanceManager is SecurityEvents {
         bytes32 proposalId,
         string calldata action
     ) external {
-        require(!executedProposals[proposalId], "Proposal already executed");
+        if (executedProposals[proposalId]) {
+            revert Errors.ProposalAlreadyExecuted(proposalId);
+        }
 
         executedProposals[proposalId] = true;
 

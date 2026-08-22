@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Vec, Symbol};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec, Symbol};
 
 // Maximum slashing history entries per (target, role) to prevent storage bloat (#380)
 const MAX_HISTORY: u32 = 50;
@@ -16,6 +16,21 @@ pub enum DataKey {
     History(Address, Symbol),
     SlashableRoles,
     Paused,
+}
+
+/// Typed errors for the Slashing contract — enables callers to match on
+/// specific failure reasons rather than parsing panic messages, and avoids
+/// paying to encode/store human-readable strings in the WASM binary and
+/// revert data (#50).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum SlashingError {
+    AlreadyInitialized = 1,
+    NotInitialized = 2,
+    ContractPaused = 3,
+    NotEligibleForSlashing = 4,
+    PenaltyParamsNotConfigured = 5,
 }
 
 #[contracttype]
@@ -38,12 +53,18 @@ pub struct SlashingRecord {
 
 // --- Storage helpers (#378: data access abstraction) ---
 
-fn get_admin(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Admin).unwrap()
+fn get_admin(env: &Env) -> Result<Address, SlashingError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(SlashingError::NotInitialized)
 }
 
-fn get_governance(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Governance).unwrap()
+fn get_governance(env: &Env) -> Result<Address, SlashingError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Governance)
+        .ok_or(SlashingError::NotInitialized)
 }
 
 fn is_paused(env: &Env) -> bool {
@@ -73,24 +94,26 @@ pub struct SlashingContract;
 
 #[contractimpl]
 impl SlashingContract {
-    pub fn initialize(env: Env, admin: Address, governance: Address, risk_pool: Address) {
+    pub fn initialize(env: Env, admin: Address, governance: Address, risk_pool: Address) -> Result<(), SlashingError> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            return Err(SlashingError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Governance, &governance);
         env.storage().instance().set(&DataKey::RiskPool, &risk_pool);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::SlashableRoles, &Vec::<Symbol>::new(&env));
-        
+
         env.events().publish(
             (symbol_short!("slash"), symbol_short!("init")),
             (admin, governance, risk_pool),
         );
+
+        Ok(())
     }
 
-    pub fn configure_penalty_parameters(env: Env, role: Symbol, params: PenaltyParams) {
-        let admin = get_admin(&env);
+    pub fn configure_penalty_parameters(env: Env, role: Symbol, params: PenaltyParams) -> Result<(), SlashingError> {
+        let admin = get_admin(&env)?;
         admin.require_auth();
 
         env.storage().persistent().set(&DataKey::PenaltyParams(role.clone()), &params);
@@ -105,25 +128,31 @@ impl SlashingContract {
             (symbol_short!("admin"), symbol_short!("cfg_pen")),
             role,
         );
+
+        Ok(())
     }
 
-    pub fn slash_funds(env: Env, target: Address, role: Symbol, reason: String, amount: i128) {
-        let governance = get_governance(&env);
+    pub fn slash_funds(env: Env, target: Address, role: Symbol, reason: String, amount: i128) -> Result<(), SlashingError> {
+        let governance = get_governance(&env)?;
         governance.require_auth();
 
         if is_paused(&env) {
-            panic!("Contract paused");
+            return Err(SlashingError::ContractPaused);
         }
 
         if !Self::can_be_slashed(env.clone(), target.clone(), role.clone()) {
-            panic!("Target not eligible for slashing");
+            return Err(SlashingError::NotEligibleForSlashing);
         }
 
         let mut count = get_violation_count_inner(&env, &target, &role);
         count += 1;
         env.storage().persistent().set(&DataKey::ViolationCount(target.clone(), role.clone()), &count);
 
-        let params = env.storage().persistent().get::<DataKey, PenaltyParams>(&DataKey::PenaltyParams(role.clone())).unwrap();
+        let params = env
+            .storage()
+            .persistent()
+            .get::<DataKey, PenaltyParams>(&DataKey::PenaltyParams(role.clone()))
+            .ok_or(SlashingError::PenaltyParamsNotConfigured)?;
 
         // Calculate progressive penalty percentage: percentage * multiplier^(count - 1)
         let multiplier_factor = params.multiplier.checked_pow(count - 1).unwrap_or(u32::MAX);
@@ -157,22 +186,24 @@ impl SlashingContract {
             (symbol_short!("slash"), role),
             final_amount,
         );
+
+        Ok(())
     }
 
     /// Slashes a specific amount directly, overriding the configured PenaltyParams and cooldown checks.
     /// Bypasses cooldown restrictions and penalty derivation math, but still increments the
     /// violation count and adds a record to the history. Target role must still be in the slashable roles list.
-    pub fn slash_funds_override(env: Env, target: Address, role: Symbol, reason: String, amount: i128) {
-        let governance = get_governance(&env);
+    pub fn slash_funds_override(env: Env, target: Address, role: Symbol, reason: String, amount: i128) -> Result<(), SlashingError> {
+        let governance = get_governance(&env)?;
         governance.require_auth();
 
         if is_paused(&env) {
-            panic!("Contract paused");
+            return Err(SlashingError::ContractPaused);
         }
 
         let roles = get_slashable_roles(&env);
         if !roles.contains(role.clone()) {
-            panic!("Target not eligible for slashing");
+            return Err(SlashingError::NotEligibleForSlashing);
         }
 
         let mut count = get_violation_count_inner(&env, &target, &role);
@@ -202,17 +233,19 @@ impl SlashingContract {
             (symbol_short!("slash"), role),
             amount,
         );
+
+        Ok(())
     }
 
-    pub fn add_slashable_role(env: Env, role: Symbol) {
-        let admin = get_admin(&env);
+    pub fn add_slashable_role(env: Env, role: Symbol) -> Result<(), SlashingError> {
+        let admin = get_admin(&env)?;
         admin.require_auth();
 
         let mut roles = get_slashable_roles(&env);
         if !roles.contains(role.clone()) {
             roles.push_back(role.clone());
             env.storage().instance().set(&DataKey::SlashableRoles, &roles);
-            
+
             env.events().publish(
                 (symbol_short!("slash"), symbol_short!("roleadd")),
                 role.clone(),
@@ -224,10 +257,12 @@ impl SlashingContract {
             (symbol_short!("admin"), symbol_short!("role_add")),
             role,
         );
+
+        Ok(())
     }
 
-    pub fn remove_slashable_role(env: Env, role: Symbol) {
-        let admin = get_admin(&env);
+    pub fn remove_slashable_role(env: Env, role: Symbol) -> Result<(), SlashingError> {
+        let admin = get_admin(&env)?;
         admin.require_auth();
 
         let roles = get_slashable_roles(&env);
@@ -238,7 +273,7 @@ impl SlashingContract {
             }
         }
         env.storage().instance().set(&DataKey::SlashableRoles, &new_roles);
-        
+
         env.events().publish(
             (symbol_short!("slash"), symbol_short!("rolerm")),
             role.clone(),
@@ -249,13 +284,15 @@ impl SlashingContract {
             (symbol_short!("admin"), symbol_short!("role_rm")),
             role,
         );
+
+        Ok(())
     }
 
-    pub fn pause(env: Env) {
-        let admin = get_admin(&env);
+    pub fn pause(env: Env) -> Result<(), SlashingError> {
+        let admin = get_admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
-        
+
         env.events().publish(
             (symbol_short!("slash"), symbol_short!("pause")),
             true,
@@ -266,13 +303,15 @@ impl SlashingContract {
             (symbol_short!("admin"), symbol_short!("paused")),
             true,
         );
+
+        Ok(())
     }
 
-    pub fn unpause(env: Env) {
-        let admin = get_admin(&env);
+    pub fn unpause(env: Env) -> Result<(), SlashingError> {
+        let admin = get_admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
-        
+
         env.events().publish(
             (symbol_short!("slash"), symbol_short!("unpause")),
             false,
@@ -283,6 +322,8 @@ impl SlashingContract {
             (symbol_short!("admin"), symbol_short!("paused")),
             false,
         );
+
+        Ok(())
     }
 }
 

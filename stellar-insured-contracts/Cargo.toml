@@ -39,7 +39,7 @@ scale = { package = "parity-scale-codec", version = "3.7.5", default-features = 
 scale-info = { version = "2.10.0", default-features = false, features = ["derive"] }
 
 [profile.release]
-overflow-checks = false
+overflow-checks = true
 lto = "fat"
 codegen-units = 1
 opt-level = "z"
