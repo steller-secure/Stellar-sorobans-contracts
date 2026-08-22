@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 soroban-sdk = "20.0.0"
+stellar-insured-lib = { path = "../lib" }
 
 [lib]
 name = "stellar_insured_risk_pool"
