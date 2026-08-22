@@ -142,8 +142,9 @@ impl PolicyContract {
         }
 
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
-        Ok(now <= expiry)
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
+        now <= expiry
     }
 
     pub fn renew_policy(env: Env, policy_id: u64, duration_days: u32) -> Result<(), PolicyError> {
@@ -156,12 +157,15 @@ impl PolicyContract {
 
         // #407: Ensure policy hasn't expired before renewal
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
         if now > expiry {
             return Err(PolicyError::PolicyExpired);
         }
 
-        policy.duration_days += duration_days;
+        policy.duration_days = policy.duration_days.checked_add(duration_days).expect("Total duration overflow");
+        // Re-validate to ensure even after renewal, the total duration is still within safe limits
+        validate_policy_params(policy.coverage_amount, policy.premium_amount, policy.duration_days);
         policy.status = PolicyStatus::Renewed;
 
         set_policy(&env, policy_id, &policy);
@@ -181,7 +185,8 @@ impl PolicyContract {
 
         // #407: Ensure policy hasn't expired before cancellation
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
         if now > expiry {
             return Err(PolicyError::PolicyExpired);
         }
@@ -227,7 +232,8 @@ impl PolicyContract {
         let mut policy = get_policy_inner(&env, policy_id)?;
 
         let now = env.ledger().timestamp();
-        let expiry = policy.start_time + (policy.duration_days as u64 * 86400);
+        let duration_seconds = (policy.duration_days as u64).checked_mul(86400).expect("Duration overflow");
+        let expiry = policy.start_time.checked_add(duration_seconds).expect("Expiry timestamp overflow");
 
         if now < expiry {
             return Err(PolicyError::PolicyNotActive);
@@ -297,6 +303,10 @@ pub fn validate_policy_params(
 ) -> Result<(), PolicyError> {
     if duration_days == 0 {
         return Err(PolicyError::InvalidDuration);
+    }
+    // Prevent overflow in duration calculation: duration_days * 86400 must fit in u64
+    if duration_days > 2135 {
+        panic!("Duration too large: maximum 2135 days allowed");
     }
     if coverage_amount <= 0 {
         return Err(PolicyError::InvalidCoverageAmount);

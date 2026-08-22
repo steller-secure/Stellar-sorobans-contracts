@@ -117,6 +117,15 @@ impl GovernanceContract {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(GovernanceError::AlreadyInitialized);
         }
+        // Validate voting period is reasonable to prevent overflow in expiry calculations
+        if voting_period == 0 {
+            panic!("Voting period must be greater than zero");
+        }
+        // Maximum voting period to prevent overflow: u64::MAX / 2 is a safe limit that
+        // ensures even if current timestamp is large, adding voting_period won't overflow
+        if voting_period > u64::MAX / 2 {
+            panic!("Voting period is too large");
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::SlashingContract, &slashing_contract);
@@ -156,15 +165,17 @@ impl GovernanceContract {
         // Read once and reuse. This previously read VotingPeriod directly and
         // then called `get_voting_period`, which reads the same key again — so
         // the binding below was dead and the storage access doubled.
-        let voting_period = get_voting_period(&env)?;
-
+        let voting_period = get_voting_period(&env);
+        
+        let current_timestamp = env.ledger().timestamp();
+        let expires_at = current_timestamp.checked_add(voting_period).expect("Proposal expiry timestamp overflow");
         let proposal = Proposal {
             id: counter,
             title,
             description,
             execution_data,
             creator: creator.clone(),
-            expires_at: env.ledger().timestamp() + voting_period,
+            expires_at,
             threshold_percentage,
             yes_votes: 0,
             no_votes: 0,
@@ -203,6 +214,9 @@ impl GovernanceContract {
         counter += 1;
         env.storage().instance().set(&DataKey::ProposalCounter, &counter);
 
+        let voting_period = get_voting_period(&env);
+        let current_timestamp = env.ledger().timestamp();
+        let expires_at = current_timestamp.checked_add(voting_period).expect("Proposal expiry timestamp overflow");
         let proposal = Proposal {
             id: counter,
             title,
@@ -249,13 +263,15 @@ impl GovernanceContract {
         // the binding below was dead and the storage access doubled.
         let voting_period = get_voting_period(&env)?;
 
+        let current_timestamp = env.ledger().timestamp();
+        let expires_at = current_timestamp.checked_add(voting_period).expect("Proposal expiry timestamp overflow");
         let proposal = Proposal {
             id: counter,
             title,
             description,
             execution_data,
             creator: creator.clone(),
-            expires_at: env.ledger().timestamp() + voting_period,
+            expires_at,
             threshold_percentage: threshold,
             yes_votes: 0,
             no_votes: 0,
@@ -300,13 +316,15 @@ impl GovernanceContract {
         // the binding below was dead and the storage access doubled.
         let voting_period = get_voting_period(&env)?;
 
+        let current_timestamp = env.ledger().timestamp();
+        let expires_at = current_timestamp.checked_add(voting_period).expect("Proposal expiry timestamp overflow");
         let proposal = Proposal {
             id: counter,
             title,
             description,
             execution_data,
             creator: creator.clone(),
-            expires_at: env.ledger().timestamp() + voting_period,
+            expires_at,
             threshold_percentage: threshold,
             yes_votes: 0,
             no_votes: 0,
