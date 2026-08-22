@@ -94,6 +94,12 @@ library Errors {
     /// @dev Thrown when a direct ETH transfer is not permitted.
     error DirectTransferNotAllowed();
 
+    /// @dev Thrown when a plain ETH transfer carries zero value.
+    error ZeroValueTransfer();
+
+    /// @dev Thrown when a low-level ETH transfer (`.call{value: ...}`) fails.
+    error TransferFailed();
+
     // -------------------------------------------------------------------------
     // Storage / State
     // -------------------------------------------------------------------------

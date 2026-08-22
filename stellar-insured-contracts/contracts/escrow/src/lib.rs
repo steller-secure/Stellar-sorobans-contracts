@@ -7,7 +7,7 @@ mod validation;
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Vec};
 
 use storage::DataKey;
-use types::{ApprovalType, EscrowData, EscrowStatus, MultiSigConfig};
+use types::{ApprovalType, EscrowData, EscrowError, EscrowStatus, MultiSigConfig};
 use validation::{
     get_admin, require_future_timestamp, require_non_zero_address, require_non_zero_u64,
     require_not_paused, require_positive_amount, require_valid_multisig,
@@ -21,10 +21,10 @@ pub struct AdvancedEscrow;
 
 #[contractimpl]
 impl AdvancedEscrow {
-    pub fn init(env: Env, admin: Address) {
-        require_non_zero_address(&admin);
+    pub fn init(env: Env, admin: Address) -> Result<(), EscrowError> {
+        require_non_zero_address(&admin)?;
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            return Err(EscrowError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -35,19 +35,23 @@ impl AdvancedEscrow {
 
         env.events()
             .publish((symbol_short!("escrow"), symbol_short!("init")), admin);
+
+        Ok(())
     }
 
-    pub fn set_pause(env: Env, admin: Address, paused: bool) {
+    pub fn set_pause(env: Env, admin: Address, paused: bool) -> Result<(), EscrowError> {
         admin.require_auth();
-        require_non_zero_address(&admin);
+        require_non_zero_address(&admin)?;
         // Use shared helper to read admin — one read, no duplication (#351, #353).
-        if admin != get_admin(&env) {
-            panic!("Unauthorized");
+        if admin != get_admin(&env)? {
+            return Err(EscrowError::Unauthorized);
         }
         env.storage().instance().set(&DataKey::Paused, &paused);
 
         env.events()
             .publish((symbol_short!("escrow"), symbol_short!("pause")), paused);
+
+        Ok(())
     }
 
     pub fn create_escrow_advanced(
@@ -60,10 +64,10 @@ impl AdvancedEscrow {
         required_signatures: u32,
         release_time_lock: Option<u64>,
         nonce: u64,
-    ) -> u64 {
-        require_not_paused(&env);
-        require_non_zero_u64(property_id, "property_id");
-        require_positive_amount(amount, "amount");
+    ) -> Result<u64, EscrowError> {
+        require_not_paused(&env)?;
+        require_non_zero_u64(property_id)?;
+        require_positive_amount(amount)?;
 
         // Nonce validation for replay protection (#349)
         let current_nonce: u64 = env
@@ -72,23 +76,23 @@ impl AdvancedEscrow {
             .get(&DataKey::Nonce(buyer.clone()))
             .unwrap_or(0);
         if nonce != current_nonce + 1 {
-            panic!("Invalid nonce");
+            return Err(EscrowError::InvalidNonce);
         }
         env.storage()
             .persistent()
             .set(&DataKey::Nonce(buyer.clone()), &nonce);
 
         if participants.len() > MAX_PARTICIPANTS {
-            panic!("Too many participants");
+            return Err(EscrowError::TooManyParticipants);
         }
-        require_valid_multisig(required_signatures, participants.len());
-        require_non_zero_address(&buyer);
-        require_non_zero_address(&seller);
+        require_valid_multisig(required_signatures, participants.len())?;
+        require_non_zero_address(&buyer)?;
+        require_non_zero_address(&seller)?;
         for participant in participants.iter() {
-            require_non_zero_address(participant);
+            require_non_zero_address(participant)?;
         }
         if let Some(time_lock) = release_time_lock {
-            require_future_timestamp(time_lock, env.ledger().timestamp(), "release_time_lock");
+            require_future_timestamp(time_lock, env.ledger().timestamp())?;
         }
 
         let mut count: u64 = env
@@ -129,29 +133,29 @@ impl AdvancedEscrow {
             (count, property_id, amount),
         );
 
-        count
+        Ok(count)
     }
 
-    pub fn deposit_funds(env: Env, escrow_id: u64, amount: i128) {
-        require_not_paused(&env);
-        require_non_zero_u64(escrow_id, "escrow_id");
-        require_positive_amount(amount, "amount");
+    pub fn deposit_funds(env: Env, escrow_id: u64, amount: i128) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+        require_non_zero_u64(escrow_id)?;
+        require_positive_amount(amount)?;
 
         let mut escrow: EscrowData = env
             .storage()
             .persistent()
             .get(&DataKey::Escrow(escrow_id))
-            .expect("Escrow not found");
+            .ok_or(EscrowError::EscrowNotFound)?;
 
         if escrow.status != EscrowStatus::Created && escrow.status != EscrowStatus::Funded {
-            panic!("Invalid status");
+            return Err(EscrowError::InvalidStatus);
         }
         let new_deposit_total = escrow
             .deposited_amount
             .checked_add(amount)
-            .unwrap_or_else(|| panic!("Deposit exceeds escrow amount"));
+            .ok_or(EscrowError::DepositExceedsAmount)?;
         if new_deposit_total > escrow.amount {
-            panic!("Deposit exceeds escrow amount");
+            return Err(EscrowError::DepositExceedsAmount);
         }
 
         escrow.deposited_amount = new_deposit_total;
@@ -170,25 +174,27 @@ impl AdvancedEscrow {
             (symbol_short!("escrow"), symbol_short!("funded")),
             (escrow_id, amount),
         );
+
+        Ok(())
     }
 
-    pub fn release_funds(env: Env, escrow_id: u64) {
-        require_not_paused(&env);
-        require_non_zero_u64(escrow_id, "escrow_id");
+    pub fn release_funds(env: Env, escrow_id: u64) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+        require_non_zero_u64(escrow_id)?;
 
         let mut escrow: EscrowData = env
             .storage()
             .persistent()
             .get(&DataKey::Escrow(escrow_id))
-            .expect("Escrow not found");
+            .ok_or(EscrowError::EscrowNotFound)?;
 
         if escrow.status != EscrowStatus::Active {
-            panic!("Invalid status");
+            return Err(EscrowError::InvalidStatus);
         }
 
         if let Some(time_lock) = escrow.release_time_lock {
             if env.ledger().timestamp() < time_lock {
-                panic!("Time lock active");
+                return Err(EscrowError::TimeLockActive);
             }
         }
 
@@ -201,10 +207,10 @@ impl AdvancedEscrow {
             .storage()
             .persistent()
             .get(&DataKey::MultiSig(escrow_id))
-            .unwrap();
+            .ok_or(EscrowError::EscrowNotFound)?;
 
         if sig_count < config.required_signatures {
-            panic!("Signature threshold not met");
+            return Err(EscrowError::SignatureThresholdNotMet);
         }
 
         let amount = escrow.deposited_amount;
@@ -218,22 +224,24 @@ impl AdvancedEscrow {
             (symbol_short!("escrow"), symbol_short!("released")),
             (escrow_id, amount),
         );
+
+        Ok(())
     }
 
-    pub fn sign_approval(env: Env, escrow_id: u64, approval_type: ApprovalType, signer: Address) {
-        require_not_paused(&env);
-        require_non_zero_u64(escrow_id, "escrow_id");
+    pub fn sign_approval(env: Env, escrow_id: u64, approval_type: ApprovalType, signer: Address) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+        require_non_zero_u64(escrow_id)?;
         signer.require_auth();
-        require_non_zero_address(&signer);
+        require_non_zero_address(&signer)?;
 
         let config: MultiSigConfig = env
             .storage()
             .persistent()
             .get(&DataKey::MultiSig(escrow_id))
-            .expect("Escrow not found");
+            .ok_or(EscrowError::EscrowNotFound)?;
 
         if !config.signers.contains(signer.clone()) {
-            panic!("Unauthorized");
+            return Err(EscrowError::Unauthorized);
         }
 
         if env.storage().persistent().has(&DataKey::Signature(
@@ -241,7 +249,7 @@ impl AdvancedEscrow {
             approval_type,
             signer.clone(),
         )) {
-            panic!("Already signed");
+            return Err(EscrowError::AlreadySigned);
         }
 
         env.storage().persistent().set(
@@ -264,6 +272,8 @@ impl AdvancedEscrow {
             (symbol_short!("escrow"), symbol_short!("signed")),
             (escrow_id, signer, count),
         );
+
+        Ok(())
     }
 }
 
@@ -276,11 +286,11 @@ impl AdvancedEscrow {
             .unwrap_or(CONTRACT_VERSION)
     }
 
-    pub fn get_admin(env: Env) -> Address {
+    pub fn get_admin(env: Env) -> Result<Address, EscrowError> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized")
+            .ok_or(EscrowError::NotInitialized)
     }
 
     pub fn is_paused(env: Env) -> bool {

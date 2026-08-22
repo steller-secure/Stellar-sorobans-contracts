@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./ContractErrors.sol";
+
 /// @title FallbackHandler
 /// @author GreenCrestz Labs
 /// @notice Handles ETH transfers and unknown function calls safely while providing detailed logging.
 /// @dev Useful for proxy patterns, payment receivers, and debugging unexpected contract interactions.
+///      All custom errors are imported from ContractErrors for consistency (#50).
 contract FallbackHandler {
-    /*//////////////////////////////////////////////////////////////
-                                ERRORS
-    //////////////////////////////////////////////////////////////*/
-
-    error ZeroValueTransfer();
-    error Unauthorized();
-
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
@@ -49,7 +45,7 @@ contract FallbackHandler {
     //////////////////////////////////////////////////////////////*/
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert Unauthorized();
+        if (msg.sender != owner) revert Errors.Unauthorized(msg.sender);
         _;
     }
 
@@ -72,7 +68,7 @@ contract FallbackHandler {
 
     /// @notice Handles plain ETH transfers with no calldata.
     receive() external payable {
-        if (msg.value == 0) revert ZeroValueTransfer();
+        if (msg.value == 0) revert Errors.ZeroValueTransfer();
 
         emit EtherReceived(
             msg.sender,
@@ -114,7 +110,7 @@ contract FallbackHandler {
         uint256 balance = address(this).balance;
 
         (bool success, ) = payable(owner).call{value: balance}("");
-        require(success, "Transfer failed");
+        if (!success) revert Errors.TransferFailed();
     }
 
     /// @notice Transfers ownership to a new address.
@@ -122,10 +118,7 @@ contract FallbackHandler {
         external
         onlyOwner
     {
-        require(
-            newOwner != address(0),
-            "Invalid owner"
-        );
+        if (newOwner == address(0)) revert Errors.InvalidNewOwner();
 
         emit OwnershipTransferred(
             owner,
