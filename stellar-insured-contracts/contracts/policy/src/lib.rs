@@ -31,6 +31,7 @@ pub enum PolicyError {
     PolicyExpired = 8,
     ClaimsContractNotSet = 9,
     ClaimExceedsCoverage = 10,
+    InvalidClaimAmount = 11,
 }
 
 // --- Storage helpers (#378: data access abstraction) ---
@@ -210,6 +211,10 @@ impl PolicyContract {
     }
 
     pub fn update_claimed(env: Env, policy_id: u64, amount: i128) -> Result<(), PolicyError> {
+        if amount <= 0 {
+            return Err(PolicyError::InvalidClaimAmount);
+        }
+
         let claims_contract: Address = env
             .storage()
             .instance()
