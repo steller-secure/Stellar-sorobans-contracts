@@ -366,9 +366,9 @@ impl ClaimsContract {
         }
 
         // Cross-contract call to Risk Pool to payout
-        env.invoke_contract(
+        env.invoke_contract::<()>(
             &risk_pool,
-            &symbol_short!("payout"),
+            &symbol_short!("payout_claim"),
             (claim.claimant.clone(), claim.amount).into(),
         );
 
@@ -378,9 +378,9 @@ impl ClaimsContract {
             .instance()
             .get(&DataKey::PolicyContract)
             .unwrap();
-        env.invoke_contract(
+        env.invoke_contract::<()>(
             &policy_contract,
-            &symbol_short!("update_cl"),
+            &symbol_short!("update_claimed"),
             (claim.policy_id, claim.amount).into(),
         );
 
