@@ -1,7 +1,10 @@
 #![no_std]
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec, Symbol};
-use stellar_insured_lib::{Proposal, GovernanceAction};
+use stellar_insured_lib::{
+    admin::{self, AdminError, PendingAdmin},
+    Proposal, GovernanceAction,
+};
 
 /// Typed errors for the Governance contract — enables callers to match on
 /// specific failure reasons rather than parsing panic messages, and avoids
@@ -35,6 +38,8 @@ pub enum GovernanceError {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    /// Successor nominated by the current admin, awaiting acceptance.
+    PendingAdmin,
     Token,
     SlashingContract,
     ClaimsContract,
@@ -580,6 +585,63 @@ impl GovernanceContract {
 
     pub fn get_vote_record(env: Env, proposal_id: u64, voter: Address) -> Option<VoteRecord> {
         env.storage().persistent().get(&DataKey::VoterRecord(proposal_id, voter))
+    }
+}
+
+// ─── Admin transfer (two-step, time-locked) ───────────────────────────────────
+//
+// `set_min_quorum_percentage` is admin-gated, and it was the only admin-gated
+// function in a contract whose admin could never be replaced — losing the key
+// froze the quorum at whatever it happened to be. These entry points give the
+// role a migration path with the same nominate-then-accept shape as
+// `src/OwnershipTransfer.sol`; the mechanics live in `stellar_insured_lib::admin`,
+// shared by all seven Soroban contracts.
+//
+// Note that this is deliberately an *admin* rotation, not a DAO vote: the admin
+// key is what the DAO's operators hold, and routing its rotation through a
+// proposal would deadlock the contract in exactly the case the rotation exists
+// for — an admin key that can no longer sign.
+
+#[contractimpl]
+impl GovernanceContract {
+    /// The current admin — the counterpart of `owner()` in `OwnershipTransfer.sol`.
+    pub fn get_admin(env: Env) -> Result<Address, GovernanceError> {
+        crate::get_admin(&env)
+    }
+
+    /// Nominate `new_admin`, acceptable once `delay_seconds` have elapsed.
+    ///
+    /// Requires the current admin's authorization, and does **not** change the
+    /// admin — the nominee must call [`Self::accept_admin`] within the
+    /// acceptance window. See `stellar_insured_lib::admin` for the delay bounds.
+    pub fn transfer_admin(
+        env: Env,
+        new_admin: Address,
+        delay_seconds: u64,
+    ) -> Result<(), AdminError> {
+        admin::propose_transfer(
+            &env,
+            &DataKey::Admin,
+            &DataKey::PendingAdmin,
+            new_admin,
+            delay_seconds,
+        )
+    }
+
+    /// Accept an outstanding nomination. Requires the nominee's authorization.
+    pub fn accept_admin(env: Env) -> Result<(), AdminError> {
+        admin::accept_transfer(&env, &DataKey::Admin, &DataKey::PendingAdmin)
+    }
+
+    /// Withdraw an outstanding nomination. Requires the current admin's
+    /// authorization, and is the lever the time lock exists to make usable.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), AdminError> {
+        admin::cancel_transfer(&env, &DataKey::Admin, &DataKey::PendingAdmin)
+    }
+
+    /// The outstanding nomination, if any.
+    pub fn get_pending_admin(env: Env) -> Option<PendingAdmin> {
+        admin::read_pending(&env, &DataKey::PendingAdmin)
     }
 }
 

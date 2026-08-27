@@ -1,6 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec, Symbol};
+use stellar_insured_lib::admin::{self, AdminError, PendingAdmin};
 
 // Maximum slashing history entries per (target, role) to prevent storage bloat (#380)
 const MAX_HISTORY: u32 = 50;
@@ -9,6 +10,8 @@ const MAX_HISTORY: u32 = 50;
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    /// Successor nominated by the current admin, awaiting acceptance.
+    PendingAdmin,
     Governance,
     RiskPool,
     PenaltyParams(Symbol),
@@ -357,10 +360,69 @@ impl SlashingContract {
     }
 }
 
+// ─── Admin transfer (two-step, time-locked) ───────────────────────────────────
+//
+// `add_slashable_role`, `remove_slashable_role`, `configure_penalty_parameters`,
+// `pause` and `unpause` are all admin-gated, and the admin was written once by
+// `initialize` with no other writer — a lost key left the contract stuck in
+// whatever paused/unpaused state it happened to be in. These entry points give
+// the role a migration path with the same nominate-then-accept shape as
+// `src/OwnershipTransfer.sol`; the mechanics live in
+// `stellar_insured_lib::admin`, shared by all seven Soroban contracts.
+//
+// The transfer is deliberately *not* blocked while the contract is paused:
+// pausing is the state an operator is most likely to be in when they need to
+// rotate a key.
+
+#[contractimpl]
+impl SlashingContract {
+    /// The current admin — the counterpart of `owner()` in `OwnershipTransfer.sol`.
+    pub fn get_admin(env: Env) -> Result<Address, SlashingError> {
+        crate::get_admin(&env)
+    }
+
+    /// Nominate `new_admin`, acceptable once `delay_seconds` have elapsed.
+    ///
+    /// Requires the current admin's authorization, and does **not** change the
+    /// admin — the nominee must call [`Self::accept_admin`] within the
+    /// acceptance window. See `stellar_insured_lib::admin` for the delay bounds.
+    pub fn transfer_admin(
+        env: Env,
+        new_admin: Address,
+        delay_seconds: u64,
+    ) -> Result<(), AdminError> {
+        admin::propose_transfer(
+            &env,
+            &DataKey::Admin,
+            &DataKey::PendingAdmin,
+            new_admin,
+            delay_seconds,
+        )
+    }
+
+    /// Accept an outstanding nomination. Requires the nominee's authorization.
+    pub fn accept_admin(env: Env) -> Result<(), AdminError> {
+        admin::accept_transfer(&env, &DataKey::Admin, &DataKey::PendingAdmin)
+    }
+
+    /// Withdraw an outstanding nomination. Requires the current admin's
+    /// authorization, and is the lever the time lock exists to make usable.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), AdminError> {
+        admin::cancel_transfer(&env, &DataKey::Admin, &DataKey::PendingAdmin)
+    }
+
+    /// The outstanding nomination, if any.
+    pub fn get_pending_admin(env: Env) -> Option<PendingAdmin> {
+        admin::read_pending(&env, &DataKey::PendingAdmin)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
     use soroban_sdk::{Env, Address, symbol_short, String};
+    use stellar_insured_lib::admin::MIN_TRANSFER_DELAY_SECONDS;
 
     #[test]
     fn test_slashing_flow() {
@@ -443,5 +505,67 @@ mod test {
         let history = client.get_slashing_history(&target, &role);
         assert_eq!(history.len(), 4);
         assert_eq!(history.get(3).unwrap().amount, 555); // raw amount used
+    }
+
+    /// Wiring check for the shared admin-transfer module: that this contract's
+    /// `DataKey::Admin` / `DataKey::PendingAdmin` are the keys the module reads
+    /// and writes, and that the rotated admin really does gain the admin-gated
+    /// powers. The rules themselves (bounds, deadlines, auth) are covered by
+    /// `stellar_insured_lib::admin`'s own tests.
+    #[test]
+    fn test_admin_transfer_hands_over_admin_powers() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let successor = Address::generate(&env);
+        let governance = Address::generate(&env);
+        let risk_pool = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, SlashingContract);
+        let client = SlashingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &governance, &risk_pool);
+
+        client.transfer_admin(&successor, &MIN_TRANSFER_DELAY_SECONDS);
+
+        // Nominating is not transferring: the incumbent is still admin.
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(client.get_pending_admin().unwrap().new_admin, successor);
+
+        env.ledger()
+            .with_mut(|l| l.timestamp = MIN_TRANSFER_DELAY_SECONDS);
+        client.accept_admin();
+
+        assert_eq!(client.get_admin(), successor);
+        assert_eq!(client.get_pending_admin(), None);
+
+        // The point of the rotation: the new admin can drive the admin-gated
+        // entry points that were previously stranded with the old key.
+        client.add_slashable_role(&symbol_short!("provider"));
+        client.pause();
+        client.unpause();
+    }
+
+    #[test]
+    fn test_admin_transfer_can_be_cancelled_before_it_takes_effect() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let successor = Address::generate(&env);
+
+        let contract_id = env.register_contract(None, SlashingContract);
+        let client = SlashingContractClient::new(&env, &contract_id);
+        client.initialize(
+            &admin,
+            &Address::generate(&env),
+            &Address::generate(&env),
+        );
+
+        client.transfer_admin(&successor, &MIN_TRANSFER_DELAY_SECONDS);
+        client.cancel_admin_transfer();
+
+        assert_eq!(client.get_pending_admin(), None);
+        assert_eq!(client.get_admin(), admin);
     }
 }

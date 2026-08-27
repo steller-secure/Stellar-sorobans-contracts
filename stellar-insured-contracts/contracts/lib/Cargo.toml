@@ -10,6 +10,12 @@ publish = false
 [dependencies]
 soroban-sdk = "20.0.0"
 
+[dev-dependencies]
+# `testutils` provides the test Env, ledger control and `Address::generate`
+# used by the admin-transfer tests. Consumers of this crate pull it in through
+# their own `std` feature, so it is only a dev dependency here.
+soroban-sdk = { version = "20.0.0", features = ["testutils"] }
+
 [lib]
 name = "stellar_insured_lib"
 path = "src/lib.rs"

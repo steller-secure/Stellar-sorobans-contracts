@@ -11,6 +11,9 @@ publish = false
 
 [dependencies]
 soroban-sdk = "20.0.0"
+# Shared two-step, time-locked admin transfer — one implementation across every
+# Soroban contract in the repository rather than a copy per crate.
+stellar-insured-lib = { path = "../lib" }
 
 [lib]
 name = "propchain_bridge"
