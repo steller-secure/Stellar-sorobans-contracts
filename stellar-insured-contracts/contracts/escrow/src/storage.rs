@@ -11,6 +11,8 @@ pub enum DataKey {
     Escrow(u64),
     EscrowCount,
     Admin,
+    /// Successor nominated by the current admin, awaiting acceptance.
+    PendingAdmin,
     Version,
     Paused,
     MultiSig(u64),

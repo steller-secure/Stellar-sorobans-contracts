@@ -8,6 +8,8 @@ use soroban_sdk::{contracttype, Address, BytesN};
 pub enum DataKey {
     Config,
     Admin,
+    /// Successor nominated by the current admin, awaiting acceptance.
+    PendingAdmin,
     Version,
     Request(u64),
     History(Address),

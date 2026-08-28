@@ -1,12 +1,17 @@
 #![no_std]
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env};
-use stellar_insured_lib::{InsurancePolicy, PolicyStatus, PolicyType};
+use stellar_insured_lib::{
+    admin::{self, AdminError, PendingAdmin},
+    InsurancePolicy, PolicyStatus, PolicyType,
+};
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
+    /// Successor nominated by the current admin, awaiting acceptance.
+    PendingAdmin,
     RiskPool,
     ClaimsContract,
     Policy(u64),
@@ -279,6 +284,59 @@ impl PolicyContract {
             (symbol_short!("policy"), symbol_short!("updated")),
             policy_id,
         );
+    }
+}
+
+// ─── Admin transfer (two-step, time-locked) ───────────────────────────────────
+//
+// Every parameter of this contract that is not fixed at initialisation sits
+// behind the admin key, so a lost or compromised key froze the contract
+// permanently: `DataKey::Admin` was written once by `initialize` and had no
+// other writer. These four entry points give it a migration path, following the
+// same nominate-then-accept shape as `src/OwnershipTransfer.sol`. The mechanics
+// live in `stellar_insured_lib::admin` so all seven Soroban contracts share one
+// implementation.
+
+#[contractimpl]
+impl PolicyContract {
+    /// The current admin — the counterpart of `owner()` in `OwnershipTransfer.sol`.
+    pub fn get_admin(env: Env) -> Result<Address, PolicyError> {
+        crate::get_admin(&env)
+    }
+
+    /// Nominate `new_admin`, acceptable once `delay_seconds` have elapsed.
+    ///
+    /// Requires the current admin's authorization, and does **not** change the
+    /// admin — the nominee must call [`Self::accept_admin`] within the
+    /// acceptance window. See `stellar_insured_lib::admin` for the delay bounds.
+    pub fn transfer_admin(
+        env: Env,
+        new_admin: Address,
+        delay_seconds: u64,
+    ) -> Result<(), AdminError> {
+        admin::propose_transfer(
+            &env,
+            &DataKey::Admin,
+            &DataKey::PendingAdmin,
+            new_admin,
+            delay_seconds,
+        )
+    }
+
+    /// Accept an outstanding nomination. Requires the nominee's authorization.
+    pub fn accept_admin(env: Env) -> Result<(), AdminError> {
+        admin::accept_transfer(&env, &DataKey::Admin, &DataKey::PendingAdmin)
+    }
+
+    /// Withdraw an outstanding nomination. Requires the current admin's
+    /// authorization, and is the lever the time lock exists to make usable.
+    pub fn cancel_admin_transfer(env: Env) -> Result<(), AdminError> {
+        admin::cancel_transfer(&env, &DataKey::Admin, &DataKey::PendingAdmin)
+    }
+
+    /// The outstanding nomination, if any.
+    pub fn get_pending_admin(env: Env) -> Option<PendingAdmin> {
+        admin::read_pending(&env, &DataKey::PendingAdmin)
     }
 }
 

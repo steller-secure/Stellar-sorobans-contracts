@@ -253,6 +253,40 @@ can_be_slashed(
 pause()
 
 unpause()
+
+🔑 Admin Ownership & Rotation
+
+Every Soroban contract — policy, claims, risk_pool, governance, slashing, bridge
+and escrow — exposes the same two-step, time-locked admin transfer, the Soroban
+counterpart of `src/OwnershipTransfer.sol`'s `transferOwnership` →
+`acceptOwnership` flow. The implementation is shared: `stellar_insured_lib::admin`.
+
+The admin never moves in a single call. The current admin nominates a successor,
+and the nomination only takes effect when the successor accepts it, so an
+address that cannot sign — a typo, a key on the wrong network — can never strand
+the contract.
+
+Core Functions
+
+transfer_admin(new_admin, delay_seconds)   // current admin nominates
+accept_admin()                             // nominee accepts; admin changes here
+cancel_admin_transfer()                    // current admin withdraws the nomination
+get_pending_admin()                        // the outstanding nomination, if any
+get_admin()                                // the current admin
+
+Timing rules
+
+- `delay_seconds` must be between 1 hour (`MIN_TRANSFER_DELAY_SECONDS`) and
+  30 days (`MAX_TRANSFER_DELAY_SECONDS`). The nomination is public for that whole
+  window, so a stolen key cannot silently rotate itself out before operators can
+  call `cancel_admin_transfer`.
+- Once eligible, a nomination stays acceptable for 7 days
+  (`ACCEPTANCE_WINDOW_SECONDS`), after which it must be made again.
+- A new nomination replaces any outstanding one and restarts the time lock.
+
+Errors from this flow are `AdminError`, numbered from 900 so its codes never
+collide with the per-contract error enums.
+
 🧑‍💻 Technology Stack
 Layer	Technology
 Blockchain	Stellar (Soroban) & Polkadot (ink!)

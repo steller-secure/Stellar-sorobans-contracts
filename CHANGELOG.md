@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Two-step, time-locked admin transfer for every Soroban contract — `policy`,
+  `claims`, `risk_pool`, `governance`, `slashing`, `bridge`, and `escrow`. Until
+  now `DataKey::Admin` was written once by `initialize`/`init` and had no other
+  writer, so a lost or compromised admin key permanently froze every
+  admin-gated operation the contract had: no parameter updates, no pause/unpause,
+  no governance migration.
+  - New shared module `stellar_insured_lib::admin`, the Soroban counterpart of
+    `src/OwnershipTransfer.sol`'s `transferOwnership` → `acceptOwnership` flow.
+    It is generic over the caller's storage-key type, so each contract keeps its
+    own `DataKey` enum and passes the `Admin` and `PendingAdmin` variants.
+  - Each contract gains `transfer_admin(new_admin, delay_seconds)`,
+    `accept_admin()`, `cancel_admin_transfer()` and `get_pending_admin()`;
+    the five contracts that had no public admin getter also gain `get_admin()`,
+    matching `bridge` and `escrow`.
+  - Beyond the Solidity pattern, a nomination carries a **time lock**
+    (`MIN_TRANSFER_DELAY_SECONDS` = 1 hour, `MAX_TRANSFER_DELAY_SECONDS` =
+    30 days) so a stolen key cannot silently rotate itself out before operators
+    can call `cancel_admin_transfer`, and an **acceptance deadline**
+    (`ACCEPTANCE_WINDOW_SECONDS` = 7 days) so a forgotten nomination cannot be
+    revived later.
+  - `AdminError` numbers its variants from 900 so its codes never collide with
+    the per-contract error enums, which all start at 1.
+  - `bridge` and `escrow` now depend on `stellar-insured-lib` for the shared
+    implementation rather than carrying a copy each.
+
 ### Changed
 
 - Standardized error handling across the contract suite (#50):
